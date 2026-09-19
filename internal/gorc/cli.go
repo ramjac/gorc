@@ -9,9 +9,11 @@ import (
 	"io"
 	"net/http/cookiejar"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 type listFlag []string
@@ -24,12 +26,22 @@ func (l *listFlag) Set(value string) error {
 }
 
 func Run(args []string, stdout, stderr io.Writer) int {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return runWithContext(ctx, args, stdout, stderr)
+}
+
+func runWithContext(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	options, err := parseRunOptions(args)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 2
 	}
-	if err := run(options, stdout, stderr); err != nil {
+	if err := run(ctx, options, stdout, stderr); err != nil {
+		if isCancellationError(err) {
+			fmt.Fprintln(stderr, "cancelled")
+			return 130
+		}
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
@@ -155,7 +167,7 @@ func discoverImplicitHTTPFile(dir string) (string, error) {
 	}
 }
 
-func run(options RunOptions, stdout, stderr io.Writer) error {
+func run(ctx context.Context, options RunOptions, stdout, stderr io.Writer) error {
 	httpFile, err := parseHTTPFile(options.FilePath)
 	if err != nil {
 		return err
@@ -220,14 +232,14 @@ func run(options RunOptions, stdout, stderr io.Writer) error {
 	}
 
 	if options.Interactive {
-		return runInteractive(context.Background(), httpFile.Requests, runtime, stdout, stderr, os.Stdin)
+		return runInteractive(ctx, httpFile.Requests, runtime, stdout, stderr, os.Stdin)
 	}
 
 	selected, err := selectRequests(httpFile.Requests, options)
 	if err != nil {
 		return err
 	}
-	return executeRequests(context.Background(), buildExecutionPlans(selected, runtime), stdout)
+	return executeRequests(ctx, buildExecutionPlans(selected, runtime), stdout)
 }
 
 func selectRequests(requests []RequestSpec, options RunOptions) ([]RequestSpec, error) {
@@ -270,8 +282,14 @@ func selectRequests(requests []RequestSpec, options RunOptions) ([]RequestSpec, 
 func runInteractive(ctx context.Context, requests []RequestSpec, runtime RuntimeConfig, stdout, stderr io.Writer, input io.Reader) error {
 	reader := bufio.NewReader(input)
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		selected, quit, err := interactiveSelection(requests, reader, stdout, stderr)
 		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			return err
 		}
 		if quit {
@@ -361,4 +379,8 @@ func mustAbs(path string) string {
 		return path
 	}
 	return abs
+}
+
+func isCancellationError(err error) bool {
+	return errors.Is(err, context.Canceled)
 }

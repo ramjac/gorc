@@ -3,6 +3,7 @@ package gorc
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -24,7 +25,7 @@ func TestRunDefaultLoggingIsSilent(t *testing.T) {
 	requestFile := writeHTTPFile(t, "@base = "+server.URL+"\n\nGET {{base}}\n")
 
 	var stdout, stderr strings.Builder
-	err := run(RunOptions{FilePath: requestFile}, &stdout, &stderr)
+	err := run(context.Background(), RunOptions{FilePath: requestFile}, &stdout, &stderr)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +56,7 @@ func TestRunTraceLoggingEmitsDiagnostics(t *testing.T) {
 	requestFile := writeHTTPFile(t, "@base = "+baseURL+"\n###\n# @name traced request\nGET {{base}}\n")
 
 	var stdout, stderr strings.Builder
-	err = run(RunOptions{
+	err = run(context.Background(), RunOptions{
 		FilePath: requestFile,
 		LogLevel: "trace",
 		SelectedAuth: AuthConfig{
@@ -255,6 +256,47 @@ func TestParseRunOptionsSupportsNoColorFlag(t *testing.T) {
 	}
 	if !options.NoColor {
 		t.Fatal("expected --no-color to disable color")
+	}
+}
+
+func TestRunReturnsCancellationErrorForCanceledContext(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	requestFile := writeHTTPFile(t, "GET "+server.URL+"\n")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	var stdout, stderr strings.Builder
+	err := run(ctx, RunOptions{FilePath: requestFile}, &stdout, &stderr)
+	if err == nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context cancellation, got %v", err)
+	}
+}
+
+func TestRunExitCodeForCancellation(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	requestFile := writeHTTPFile(t, "GET "+server.URL+"\n")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	var stdout, stderr strings.Builder
+	code := runWithContext(ctx, []string{requestFile}, &stdout, &stderr)
+	if code != 130 {
+		t.Fatalf("expected exit code 130, got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "cancelled") {
+		t.Fatalf("expected cancellation message, got %q", stderr.String())
 	}
 }
 
