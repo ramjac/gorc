@@ -11,6 +11,7 @@ import (
 	"mime"
 	"net/http"
 	"net/http/cookiejar"
+	"net/http/httptrace"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -35,6 +36,7 @@ func executeRequests(ctx context.Context, plans []executionPlan, stdout io.Write
 	for i, plan := range plans {
 		resp, body, err := executeRequest(ctx, plan)
 		if err != nil {
+			plan.Runtime.Logger.Errorf("request %q failed: %v", plan.Request.Name, err)
 			return err
 		}
 		if i > 0 {
@@ -53,6 +55,7 @@ func executeRequests(ctx context.Context, plans []executionPlan, stdout io.Write
 func executeRequest(ctx context.Context, plan executionPlan) (*http.Response, []byte, error) {
 	reqSpec := plan.Request
 	runtime := plan.Runtime
+	logger := runtime.Logger
 	resolver := resolver{
 		RequestVars: reqSpec.FileVars,
 		FileVars:    runtime.FileVars,
@@ -64,10 +67,15 @@ func executeRequest(ctx context.Context, plan executionPlan) (*http.Response, []
 	if err != nil {
 		return nil, nil, err
 	}
+	logger.Infof("executing request %q", resolved.Name)
+	logger.Debugf("resolved request method=%s url=%s http_version=%s", resolved.Method, resolved.URL, resolved.HTTPVersion)
 
 	bodyBytes, err := buildBody(resolved)
 	if err != nil {
 		return nil, nil, err
+	}
+	if len(bodyBytes) > 0 {
+		logger.Debugf("prepared request body bytes=%d", len(bodyBytes))
 	}
 
 	request, err := http.NewRequestWithContext(ctx, resolved.Method, resolved.URL, newBody(bodyBytes))
@@ -82,6 +90,7 @@ func executeRequest(ctx context.Context, plan executionPlan) (*http.Response, []
 			request.Header.Add(key, value)
 		}
 	}
+	request = withTrace(request, logger)
 
 	transport, closer, err := buildTransport(resolved)
 	if err != nil {
@@ -91,28 +100,39 @@ func executeRequest(ctx context.Context, plan executionPlan) (*http.Response, []
 		defer closer.Close()
 	}
 
-	roundTripper := transport
+	var roundTripper http.RoundTripper = loggingRoundTripper{base: transport, logger: logger}
 	switch strings.ToLower(resolved.Auth.Scheme) {
 	case "basic":
+		logger.Debugf("configuring basic authentication")
 		request.SetBasicAuth(resolved.Auth.Username, resolved.Auth.Password)
 	case "bearer":
+		logger.Debugf("configuring bearer authentication")
 		request.Header.Set("Authorization", "Bearer "+resolved.Auth.Token)
 	case "digest":
+		logger.Debugf("configuring digest authentication handshake")
 		roundTripper = &digest.Transport{
 			Username:  resolved.Auth.Username,
 			Password:  resolved.Auth.Password,
-			Transport: transport,
+			Transport: roundTripper,
 			Jar:       runtime.CookieJar,
 		}
 	case "ntlm":
+		logger.Debugf("configuring NTLM authentication handshake")
 		request.SetBasicAuth(resolved.Auth.Username, resolved.Auth.Password)
-		roundTripper = ntlmssp.Negotiator{RoundTripper: transport}
+		roundTripper = ntlmssp.Negotiator{RoundTripper: roundTripper}
 	case "azuread":
+		logger.Debugf("requesting Azure AD access token")
 		token, err := getAzureToken(ctx, resolved)
 		if err != nil {
 			return nil, nil, err
 		}
 		request.Header.Set("Authorization", "Bearer "+token)
+	case "", "mtls":
+		if resolved.Auth.Scheme == "mtls" {
+			logger.Debugf("using mTLS client certificate authentication")
+		}
+	default:
+		logger.Debugf("configuring auth scheme %q", resolved.Auth.Scheme)
 	}
 
 	client := &http.Client{
@@ -123,9 +143,11 @@ func executeRequest(ctx context.Context, plan executionPlan) (*http.Response, []
 
 	resp, err := client.Do(request)
 	if err != nil {
+		logger.Errorf("request %q transport error: %v", resolved.Name, err)
 		return nil, nil, err
 	}
 	defer resp.Body.Close()
+	logger.Infof("request %q completed with status=%s", resolved.Name, resp.Status)
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -138,6 +160,7 @@ func executeRequest(ctx context.Context, plan executionPlan) (*http.Response, []
 		if err := os.WriteFile(resolved.OutputFile, body, 0o644); err != nil {
 			return nil, nil, err
 		}
+		logger.Debugf("wrote response body to %s", resolved.OutputFile)
 	}
 	return resp, body, nil
 }
@@ -148,6 +171,7 @@ type resolvedRequest struct {
 	Auth     AuthConfig
 	CertFile string
 	KeyFile  string
+	Logger   *Logger
 }
 
 func resolveRequest(spec RequestSpec, runtime RuntimeConfig, vars resolver) (resolvedRequest, error) {
@@ -157,6 +181,7 @@ func resolveRequest(spec RequestSpec, runtime RuntimeConfig, vars resolver) (res
 		Auth:        mergeAuth(runtime.Config.Auth, runtime.Auth, spec.Auth),
 		CertFile:    resolvePath(runtime.RootDir, runtime.Config.CertFile),
 		KeyFile:     resolvePath(runtime.RootDir, runtime.Config.KeyFile),
+		Logger:      runtime.Logger,
 	}
 	if resolved.Timeout == 0 {
 		resolved.Timeout = 30 * time.Second
@@ -224,6 +249,9 @@ func resolveRequest(spec RequestSpec, runtime RuntimeConfig, vars resolver) (res
 	if resolved.HTTPVersion == "" {
 		resolved.HTTPVersion = "auto"
 	}
+	if runtime.Logger != nil && runtime.Logger.Enabled(LogLevelDebug) {
+		runtime.Logger.Debugf("resolved request config name=%q proxy=%q output_file=%q body_file=%q", resolved.Name, resolved.Proxy, resolved.OutputFile, resolved.BodyFile)
+	}
 
 	return resolved, nil
 }
@@ -288,10 +316,16 @@ func mergeAuth(configAuth, cliAuth, requestAuth AuthConfig) AuthConfig {
 
 func buildBody(resolved resolvedRequest) ([]byte, error) {
 	if resolved.BodyFile != "" {
+		if resolved.Logger != nil {
+			resolved.Logger.Debugf("reading request body from file %s", resolved.BodyFile)
+		}
 		return os.ReadFile(resolved.BodyFile)
 	}
 	if strings.HasPrefix(strings.TrimSpace(resolved.Body), "< ") {
 		bodyFile := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(resolved.Body), "< "))
+		if resolved.Logger != nil {
+			resolved.Logger.Debugf("reading request body from inline file reference %s", bodyFile)
+		}
 		return os.ReadFile(resolvePath(filepath.Dir(resolved.SourcePath), bodyFile))
 	}
 	if resolved.Body == "" {
@@ -308,6 +342,9 @@ func newBody(body []byte) io.ReadCloser {
 }
 
 func buildTransport(resolved resolvedRequest) (http.RoundTripper, io.Closer, error) {
+	if resolved.Logger != nil {
+		resolved.Logger.Debugf("building transport http_version=%s proxy=%q insecure=%t", resolved.HTTPVersion, resolved.Proxy, resolved.Insecure)
+	}
 	tlsConfig, err := buildTLSConfig(resolved)
 	if err != nil {
 		return nil, nil, err
@@ -316,6 +353,9 @@ func buildTransport(resolved resolvedRequest) (http.RoundTripper, io.Closer, err
 	if resolved.HTTPVersion == "3" {
 		if resolved.Proxy != "" {
 			return nil, nil, errors.New("HTTP/3 proxy support is not available")
+		}
+		if resolved.Logger != nil {
+			resolved.Logger.Debugf("using HTTP/3 transport")
 		}
 		transport := &http3.Transport{
 			TLSClientConfig: tlsConfig,
@@ -329,6 +369,9 @@ func buildTransport(resolved resolvedRequest) (http.RoundTripper, io.Closer, err
 		Proxy:             http.ProxyFromEnvironment,
 	}
 	if resolved.HTTPVersion == "1" {
+		if resolved.Logger != nil {
+			resolved.Logger.Debugf("forcing HTTP/1.x transport")
+		}
 		transport.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
 	}
 	if resolved.Proxy != "" {
@@ -337,6 +380,9 @@ func buildTransport(resolved resolvedRequest) (http.RoundTripper, io.Closer, err
 			return nil, nil, err
 		}
 		transport.Proxy = http.ProxyURL(proxyURL)
+		if resolved.Logger != nil {
+			resolved.Logger.Debugf("using proxy %s", proxyURL.Redacted())
+		}
 	}
 	return transport, nil, nil
 }
@@ -344,6 +390,9 @@ func buildTransport(resolved resolvedRequest) (http.RoundTripper, io.Closer, err
 func buildTLSConfig(resolved resolvedRequest) (*tls.Config, error) {
 	tlsConfig := &tls.Config{InsecureSkipVerify: resolved.Insecure} //nolint:gosec
 	if resolved.CACertFile != "" {
+		if resolved.Logger != nil {
+			resolved.Logger.Debugf("loading custom CA certificates from %s", resolved.CACertFile)
+		}
 		pemData, err := os.ReadFile(resolved.CACertFile)
 		if err != nil {
 			return nil, err
@@ -369,6 +418,9 @@ func buildTLSConfig(resolved resolvedRequest) (*tls.Config, error) {
 	if certFile != "" || keyFile != "" {
 		if certFile == "" || keyFile == "" {
 			return nil, errors.New("both certificate and key files are required")
+		}
+		if resolved.Logger != nil {
+			resolved.Logger.Debugf("loading client certificate cert=%s key=%s", certFile, keyFile)
 		}
 		cert, err := tls.LoadX509KeyPair(certFile, keyFile)
 		if err != nil {
@@ -416,6 +468,9 @@ func getAzureToken(ctx context.Context, resolved resolvedRequest) (string, error
 		return "", err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if resolved.Logger != nil {
+		resolved.Logger.Debugf("requesting Azure AD token from %s", tokenURL)
+	}
 
 	client := &http.Client{Timeout: resolved.Timeout}
 	resp, err := client.Do(req)
@@ -442,6 +497,73 @@ func getAzureToken(ctx context.Context, resolved resolvedRequest) (string, error
 		return "", errors.New("azuread token response did not include access_token")
 	}
 	return payload.AccessToken, nil
+}
+
+type loggingRoundTripper struct {
+	base   http.RoundTripper
+	logger *Logger
+}
+
+func (l loggingRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	if l.base == nil {
+		l.base = http.DefaultTransport
+	}
+	if l.logger != nil {
+		l.logger.Tracef("round trip start method=%s url=%s", req.Method, req.URL.String())
+	}
+	resp, err := l.base.RoundTrip(req)
+	if err != nil {
+		if l.logger != nil {
+			l.logger.Errorf("round trip failed method=%s url=%s err=%v", req.Method, req.URL.String(), err)
+		}
+		return nil, err
+	}
+	if l.logger != nil {
+		l.logger.Tracef("round trip done method=%s url=%s status=%s", req.Method, req.URL.String(), resp.Status)
+	}
+	return resp, nil
+}
+
+func withTrace(req *http.Request, logger *Logger) *http.Request {
+	if logger == nil || !logger.Enabled(LogLevelTrace) {
+		return req
+	}
+	trace := &httptrace.ClientTrace{
+		GetConn: func(hostPort string) {
+			logger.Tracef("get connection addr=%s", hostPort)
+		},
+		DNSStart: func(info httptrace.DNSStartInfo) {
+			logger.Tracef("dns start host=%s", info.Host)
+		},
+		DNSDone: func(info httptrace.DNSDoneInfo) {
+			logger.Tracef("dns done addrs=%d err=%v", len(info.Addrs), info.Err)
+		},
+		ConnectStart: func(network, addr string) {
+			logger.Tracef("connect start network=%s addr=%s", network, addr)
+		},
+		ConnectDone: func(network, addr string, err error) {
+			logger.Tracef("connect done network=%s addr=%s err=%v", network, addr, err)
+		},
+		TLSHandshakeStart: func() {
+			logger.Tracef("tls handshake start")
+		},
+		TLSHandshakeDone: func(_ tls.ConnectionState, err error) {
+			logger.Tracef("tls handshake done err=%v", err)
+		},
+		WroteHeaders: func() {
+			logger.Tracef("request headers written")
+		},
+		WroteRequest: func(info httptrace.WroteRequestInfo) {
+			logger.Tracef("request write done err=%v", info.Err)
+		},
+		GotConn: func(info httptrace.GotConnInfo) {
+			logger.Tracef("got connection reused=%t idle=%t", info.Reused, info.WasIdle)
+		},
+		GotFirstResponseByte: func() {
+			logger.Tracef("received first response byte")
+		},
+	}
+	return req.WithContext(httptrace.WithClientTrace(req.Context(), trace))
 }
 
 func writeResponse(w io.Writer, req RequestSpec, resp *http.Response, body []byte) error {

@@ -49,7 +49,10 @@ gorc [flags] /absolute/or/relative/file.http
 - `--output /path/to/response.out` save the selected response body
 - `--proxy http://127.0.0.1:8080` use a proxy
 - `--http-version auto|1|2|3` select the HTTP version
+- `--log-level none|error|info|debug|trace` control diagnostic logging on stderr
 - `--insecure` skip TLS verification
+
+By default, `gorc` stays quiet and only prints HTTP request results to stdout. Diagnostic logging is opt-in and is written to stderr.
 
 ## `.http` format
 
@@ -173,6 +176,7 @@ Example:
 ```json
 {
   "http_version": "auto",
+  "log_level": "debug",
   "proxy": "http://127.0.0.1:8080",
   "timeout": "30s",
   "vars": {
@@ -187,6 +191,10 @@ Example:
 
 ## Notes
 
+- `trace` logging includes low-level request lifecycle events such as connection acquisition, DNS lookup, connect/TLS milestones, and first-response-byte timing hooks exposed by Go's HTTP client.
+- `debug` logging includes request selection, auth setup, transport choices, proxy usage, TLS material loading, and response-file writes.
+- `info` logging includes request start and completion status lines.
+- `error` logging includes transport and request failures.
 - HTTP/2 uses Go's standard TLS negotiation.
 - HTTP/3 requires HTTPS and does not currently support proxies in this CLI.
 - Cookies are shared only within a single CLI run.

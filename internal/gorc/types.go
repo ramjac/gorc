@@ -1,6 +1,7 @@
 package gorc
 
 import (
+	"io"
 	"net/http"
 	"time"
 )
@@ -47,6 +48,7 @@ type Config struct {
 	Vars        map[string]string `json:"vars"`
 	Proxy       string            `json:"proxy"`
 	HTTPVersion string            `json:"http_version"`
+	LogLevel    string            `json:"log_level"`
 	Insecure    bool              `json:"insecure"`
 	CACertFile  string            `json:"ca_cert_file"`
 	CertFile    string            `json:"cert_file"`
@@ -68,6 +70,7 @@ type RunOptions struct {
 	OutputFile   string
 	Proxy        string
 	HTTPVersion  string
+	LogLevel     string
 	Insecure     bool
 	Timeout      time.Duration
 	SelectedAuth AuthConfig
@@ -86,8 +89,11 @@ type RuntimeConfig struct {
 	BodyFile    string
 	Proxy       string
 	HTTPVersion string
+	LogLevel    string
 	Insecure    bool
 	Auth        AuthConfig
+	Logger      *Logger
+	LogWriter   io.Writer
 }
 
 type executionPlan struct {

@@ -50,6 +50,7 @@ func parseRunOptions(args []string) (RunOptions, error) {
 		bodyFile    string
 		proxy       string
 		httpVer     string
+		logLevel    string
 		insecure    bool
 		all         bool
 		interactive bool
@@ -63,6 +64,7 @@ func parseRunOptions(args []string) (RunOptions, error) {
 	fs.StringVar(&bodyFile, "body-file", "", "file to read the request body from")
 	fs.StringVar(&proxy, "proxy", "", "proxy URL")
 	fs.StringVar(&httpVer, "http-version", "", "HTTP version: auto, 1, 2, or 3")
+	fs.StringVar(&logLevel, "log-level", "", "log level: none, error, info, debug, or trace")
 	fs.BoolVar(&insecure, "insecure", false, "skip TLS verification")
 	fs.BoolVar(&all, "all", false, "execute all requests in the .http file")
 	fs.BoolVar(&interactive, "interactive", false, "interactively choose requests to execute")
@@ -96,6 +98,7 @@ func parseRunOptions(args []string) (RunOptions, error) {
 		OutputFile:  outputFile,
 		Proxy:       proxy,
 		HTTPVersion: httpVer,
+		LogLevel:    logLevel,
 		Insecure:    insecure,
 	}, nil
 }
@@ -125,6 +128,14 @@ func run(options RunOptions, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	logLevel := cfg.LogLevel
+	if options.LogLevel != "" {
+		logLevel = options.LogLevel
+	}
+	logger, err := NewLogger(logLevel, stderr)
+	if err != nil {
+		return err
+	}
 	jar, err := cookiejar.New(nil)
 	if err != nil {
 		return err
@@ -143,8 +154,11 @@ func run(options RunOptions, stdout, stderr io.Writer) error {
 		BodyFile:    options.BodyFile,
 		Proxy:       options.Proxy,
 		HTTPVersion: options.HTTPVersion,
+		LogLevel:    logLevel,
 		Insecure:    options.Insecure,
 		Auth:        options.SelectedAuth,
+		Logger:      logger,
+		LogWriter:   stderr,
 	}
 
 	selected, err := selectRequests(httpFile.Requests, options, stdout, stderr)
