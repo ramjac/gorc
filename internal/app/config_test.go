@@ -9,7 +9,7 @@ import (
 func TestLoadConfigUsesGORCConfigEnv(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
-	if err := os.WriteFile(path, []byte(`{"proxy":"http://proxy.local:8080","vars":{"tenant":"example"}}`), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(`{"proxy":"http://proxy.local:8080","self_signed_cert_file":"./server.pem","auth":{"scheme":"azuread","token_url":"https://login.example.test/token"},"vars":{"tenant":"example"}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("GORC_CONFIG", path)
@@ -23,6 +23,12 @@ func TestLoadConfigUsesGORCConfigEnv(t *testing.T) {
 	}
 	if cfg.Proxy != "http://proxy.local:8080" {
 		t.Fatalf("unexpected proxy %q", cfg.Proxy)
+	}
+	if cfg.SelfSignedCertFile != "./server.pem" {
+		t.Fatalf("unexpected self-signed cert path %q", cfg.SelfSignedCertFile)
+	}
+	if cfg.Auth.Scheme != "azuread" || cfg.Auth.TokenURL != "https://login.example.test/token" {
+		t.Fatalf("unexpected auth config %#v", cfg.Auth)
 	}
 	if cfg.Vars["tenant"] != "example" {
 		t.Fatalf("unexpected vars %#v", cfg.Vars)

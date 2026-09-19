@@ -1,0 +1,21 @@
+{
+  "log_level": "info",
+  "self_signed_cert_file": "./todoapi/generated/selfsigned-cert.pem",
+  "vars": {
+    "self_signed_base": "https://127.0.0.1:9443",
+    "ca_base": "https://127.0.0.1:9444",
+    "mtls_base": "https://127.0.0.1:9445",
+    "basic_username": "demo",
+    "basic_secret": "basic-pass",
+    "bearer_token": "todo-demo-bearer-token",
+    "digest_username": "digest-user",
+    "digest_secret": "digest-pass",
+    "azure_tenant": "todo-demo-tenant",
+    "azure_client_id": "todo-demo-client",
+    "azure_client_secret": "todo-demo-secret",
+    "azure_scope": "api://todo-demo/.default",
+    "demo_ca_cert": "./todoapi/generated/demo-ca-cert.pem",
+    "mtls_client_cert": "./todoapi/generated/mtls-client-cert.pem",
+    "mtls_client_key": "./todoapi/generated/mtls-client-key.pem"
+  }
+}

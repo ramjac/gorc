@@ -30,6 +30,26 @@ go build ./...
 go test ./...
 ```
 
+## Examples
+
+The repository includes a runnable demo in `/home/runner/work/gorc/gorc/examples`.
+
+- `/home/runner/work/gorc/gorc/examples/todoapi` contains a small in-memory Go todo API
+- `/home/runner/work/gorc/gorc/examples/todo-demo.http` contains demo requests for the example API
+- `/home/runner/work/gorc/gorc/examples/gorc-demo.json` contains matching `gorc` config defaults and variables
+
+Start the demo API:
+
+```bash
+go run ./examples/todoapi
+```
+
+Then run the demo requests:
+
+```bash
+go run ./cmd/gorc -c ./examples/gorc-demo.json ./examples/todo-demo.http --all
+```
+
 ## Usage
 
 ```bash

@@ -30,34 +30,34 @@ type RequestSpec struct {
 }
 
 type AuthConfig struct {
-	Scheme       string `json:"scheme"`
-	Username     string `json:"username"`
-	Password     string `json:"password"`
-	Token        string `json:"token"`
-	CertFile     string `json:"cert_file"`
-	KeyFile      string `json:"key_file"`
-	CACertFile   string `json:"ca_cert_file"`
-	TenantID     string `json:"tenant_id"`
-	ClientID     string `json:"client_id"`
-	ClientSecret string `json:"client_secret"`
-	Scope        string `json:"scope"`
-	Resource     string `json:"resource"`
-	TokenURL     string `json:"token_url"`
+	Scheme       string `json:"scheme" mapstructure:"scheme"`
+	Username     string `json:"username" mapstructure:"username"`
+	Password     string `json:"password" mapstructure:"password"`
+	Token        string `json:"token" mapstructure:"token"`
+	CertFile     string `json:"cert_file" mapstructure:"cert_file"`
+	KeyFile      string `json:"key_file" mapstructure:"key_file"`
+	CACertFile   string `json:"ca_cert_file" mapstructure:"ca_cert_file"`
+	TenantID     string `json:"tenant_id" mapstructure:"tenant_id"`
+	ClientID     string `json:"client_id" mapstructure:"client_id"`
+	ClientSecret string `json:"client_secret" mapstructure:"client_secret"`
+	Scope        string `json:"scope" mapstructure:"scope"`
+	Resource     string `json:"resource" mapstructure:"resource"`
+	TokenURL     string `json:"token_url" mapstructure:"token_url"`
 }
 
 type Config struct {
-	Vars               map[string]string `json:"vars"`
-	Proxy              string            `json:"proxy"`
-	HTTPVersion        string            `json:"http_version"`
-	LogLevel           string            `json:"log_level"`
-	NoColor            bool              `json:"no_color"`
-	Insecure           bool              `json:"insecure"`
-	CACertFile         string            `json:"ca_cert_file"`
-	SelfSignedCertFile string            `json:"self_signed_cert_file"`
-	CertFile           string            `json:"cert_file"`
-	KeyFile            string            `json:"key_file"`
-	Timeout            string            `json:"timeout"`
-	Auth               AuthConfig        `json:"auth"`
+	Vars               map[string]string `json:"vars" mapstructure:"vars"`
+	Proxy              string            `json:"proxy" mapstructure:"proxy"`
+	HTTPVersion        string            `json:"http_version" mapstructure:"http_version"`
+	LogLevel           string            `json:"log_level" mapstructure:"log_level"`
+	NoColor            bool              `json:"no_color" mapstructure:"no_color"`
+	Insecure           bool              `json:"insecure" mapstructure:"insecure"`
+	CACertFile         string            `json:"ca_cert_file" mapstructure:"ca_cert_file"`
+	SelfSignedCertFile string            `json:"self_signed_cert_file" mapstructure:"self_signed_cert_file"`
+	CertFile           string            `json:"cert_file" mapstructure:"cert_file"`
+	KeyFile            string            `json:"key_file" mapstructure:"key_file"`
+	Timeout            string            `json:"timeout" mapstructure:"timeout"`
+	Auth               AuthConfig        `json:"auth" mapstructure:"auth"`
 }
 
 type RunOptions struct {
