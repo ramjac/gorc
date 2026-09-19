@@ -2,6 +2,8 @@
 
 A Go CLI for executing REST requests defined in `.http` files.
 
+This project was a learning project using GPT-5.X coding assistants.
+
 ## Features
 
 - Execute a single request from a `.http` file
