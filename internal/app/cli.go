@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"net/http/cookiejar"
@@ -14,15 +13,42 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+
+	"github.com/spf13/cobra"
 )
 
-type listFlag []string
+const usageText = "usage: gorc [flags] /absolute/or/relative/file.http"
 
-func (l *listFlag) String() string { return strings.Join(*l, ",") }
+type cliParser struct {
+	cmd         *cobra.Command
+	names       []string
+	vars        []string
+	indexes     string
+	configPath  string
+	varsFile    string
+	outputFile  string
+	bodyFile    string
+	proxy       string
+	httpVersion string
+	logLevel    string
+	noColor     bool
+	selfSigned  string
+	insecure    bool
+	all         bool
+	interactive bool
+	parsed      RunOptions
+}
 
-func (l *listFlag) Set(value string) error {
-	*l = append(*l, value)
-	return nil
+type usageError struct {
+	err error
+}
+
+func (e usageError) Error() string {
+	return e.err.Error()
+}
+
+func (e usageError) Unwrap() error {
+	return e.err
 }
 
 func Run(args []string, stdout, stderr io.Writer) int {
@@ -32,15 +58,19 @@ func Run(args []string, stdout, stderr io.Writer) int {
 }
 
 func runWithContext(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	options, err := parseRunOptions(args)
-	if err != nil {
-		fmt.Fprintln(stderr, err)
-		return 2
-	}
-	if err := run(ctx, options, stdout, stderr); err != nil {
+	parser := newCLIParser(stdout, stderr, func(ctx context.Context, options RunOptions) error {
+		return run(ctx, options, stdout, stderr)
+	})
+	parser.cmd.SetArgs(args)
+	parser.cmd.SetContext(ctx)
+	if err := parser.cmd.Execute(); err != nil {
 		if isCancellationError(err) {
 			fmt.Fprintln(stderr, "cancelled")
 			return 130
+		}
+		if isUsageError(err) {
+			fmt.Fprintln(stderr, err)
+			return 2
 		}
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -49,98 +79,111 @@ func runWithContext(ctx context.Context, args []string, stdout, stderr io.Writer
 }
 
 func parseRunOptions(args []string) (RunOptions, error) {
-	fs := flag.NewFlagSet("gorc", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-
-	var (
-		names       listFlag
-		vars        listFlag
-		indexes     string
-		configPath  string
-		varsFile    string
-		outputFile  string
-		bodyFile    string
-		proxy       string
-		httpVer     string
-		logLevel    string
-		noColor     bool
-		selfSigned  string
-		insecure    bool
-		all         bool
-		interactive bool
-	)
-	stringFlagVar(fs, &names, "name", "n", "request name to execute")
-	stringFlagVar(fs, &vars, "var", "v", "variable assignment key=value")
-	stringFlag(fs, &indexes, "index", "x", "comma-separated request indexes (1-based)")
-	stringFlag(fs, &configPath, "config", "c", "config file path")
-	stringFlag(fs, &varsFile, "vars-file", "e", "JSON file containing variables")
-	stringFlag(fs, &outputFile, "output", "o", "file to save the response body")
-	stringFlag(fs, &bodyFile, "body-file", "b", "file to read the request body from")
-	stringFlag(fs, &proxy, "proxy", "p", "proxy URL")
-	stringFlag(fs, &httpVer, "http-version", "H", "HTTP version: auto, 1, 2, or 3")
-	stringFlag(fs, &logLevel, "log-level", "l", "log level: none, error, info, debug, or trace")
-	boolFlag(fs, &noColor, "no-color", "C", "disable colored output")
-	stringFlag(fs, &selfSigned, "self-signed-cert", "s", "PEM file for a trusted self-signed server certificate")
-	boolFlag(fs, &insecure, "insecure", "k", "skip TLS verification")
-	boolFlag(fs, &all, "all", "a", "execute all requests in the .http file")
-	boolFlag(fs, &interactive, "interactive", "i", "interactively choose requests to execute")
-	if err := fs.Parse(args); err != nil {
+	parser := newCLIParser(io.Discard, io.Discard, nil)
+	parser.cmd.SetArgs(args)
+	if err := parser.cmd.Execute(); err != nil {
 		return RunOptions{}, err
 	}
-	rest := fs.Args()
-	if len(rest) == 0 {
+	return parser.parsed, nil
+}
+
+func newCLIParser(stdout, stderr io.Writer, runner func(context.Context, RunOptions) error) *cliParser {
+	parser := &cliParser{}
+	cmd := &cobra.Command{
+		Use:                   "gorc [flags] /absolute/or/relative/file.http",
+		Short:                 "Execute REST requests defined in .http files",
+		SilenceErrors:         true,
+		SilenceUsage:          true,
+		DisableFlagsInUseLine: true,
+		CompletionOptions: cobra.CompletionOptions{
+			DisableDefaultCmd: true,
+		},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			options, err := parser.buildOptions(args)
+			if err != nil {
+				return err
+			}
+			parser.parsed = options
+			if runner == nil {
+				return nil
+			}
+			return runner(cmd.Context(), options)
+		},
+	}
+	cmd.SetOut(stdout)
+	cmd.SetErr(stderr)
+	cmd.SetFlagErrorFunc(func(_ *cobra.Command, err error) error {
+		return usageError{err: err}
+	})
+
+	flags := cmd.Flags()
+	flags.StringArrayVarP(&parser.names, "name", "n", nil, "request name to execute")
+	flags.StringArrayVarP(&parser.vars, "var", "v", nil, "variable assignment key=value")
+	flags.StringVarP(&parser.indexes, "index", "x", "", "comma-separated request indexes (1-based)")
+	flags.StringVarP(&parser.configPath, "config", "c", "", "config file path")
+	flags.StringVarP(&parser.varsFile, "vars-file", "e", "", "JSON file containing variables")
+	flags.StringVarP(&parser.outputFile, "output", "o", "", "file to save the response body")
+	flags.StringVarP(&parser.bodyFile, "body-file", "b", "", "file to read the request body from")
+	flags.StringVarP(&parser.proxy, "proxy", "p", "", "proxy URL")
+	flags.StringVarP(&parser.httpVersion, "http-version", "H", "", "HTTP version: auto, 1, 2, or 3")
+	flags.StringVarP(&parser.logLevel, "log-level", "l", "", "log level: none, error, info, debug, or trace")
+	flags.BoolVarP(&parser.noColor, "no-color", "C", false, "disable colored output")
+	flags.StringVarP(&parser.selfSigned, "self-signed-cert", "s", "", "PEM file for a trusted self-signed server certificate")
+	flags.BoolVarP(&parser.insecure, "insecure", "k", false, "skip TLS verification")
+	flags.BoolVarP(&parser.all, "all", "a", false, "execute all requests in the .http file")
+	flags.BoolVarP(&parser.interactive, "interactive", "i", false, "interactively choose requests to execute")
+
+	parser.cmd = cmd
+	return parser
+}
+
+func (p *cliParser) buildOptions(args []string) (RunOptions, error) {
+	var filePath string
+	switch len(args) {
+	case 0:
 		discovered, err := discoverImplicitHTTPFile(".")
 		if err != nil {
-			return RunOptions{}, err
+			return RunOptions{}, usageError{err: err}
 		}
-		rest = []string{discovered}
-	}
-	if len(rest) != 1 {
-		return RunOptions{}, errors.New("usage: gorc [flags] /absolute/or/relative/file.http")
+		filePath = discovered
+	case 1:
+		filePath = args[0]
+	default:
+		return RunOptions{}, usageError{err: errors.New(usageText)}
 	}
 
-	indices, err := parseIndices(indexes)
+	indices, err := parseIndices(p.indexes)
 	if err != nil {
-		return RunOptions{}, err
+		return RunOptions{}, usageError{err: err}
 	}
-	parsedVars, err := parseVarAssignments(vars)
+	parsedVars, err := parseVarAssignments(p.vars)
 	if err != nil {
-		return RunOptions{}, err
+		return RunOptions{}, usageError{err: err}
 	}
 
 	return RunOptions{
-		FilePath:           rest[0],
-		ConfigPath:         configPath,
-		VarsFile:           varsFile,
+		FilePath:           filePath,
+		ConfigPath:         p.configPath,
+		VarsFile:           p.varsFile,
 		Vars:               parsedVars,
-		Names:              names,
+		Names:              p.names,
 		Indices:            indices,
-		All:                all,
-		Interactive:        interactive,
-		BodyFile:           bodyFile,
-		OutputFile:         outputFile,
-		Proxy:              proxy,
-		HTTPVersion:        httpVer,
-		LogLevel:           logLevel,
-		NoColor:            noColor,
-		SelfSignedCertFile: selfSigned,
-		Insecure:           insecure,
+		All:                p.all,
+		Interactive:        p.interactive,
+		BodyFile:           p.bodyFile,
+		OutputFile:         p.outputFile,
+		Proxy:              p.proxy,
+		HTTPVersion:        p.httpVersion,
+		LogLevel:           p.logLevel,
+		NoColor:            p.noColor,
+		SelfSignedCertFile: p.selfSigned,
+		Insecure:           p.insecure,
 	}, nil
 }
 
-func stringFlag(fs *flag.FlagSet, target *string, long, short, usage string) {
-	fs.StringVar(target, long, "", usage)
-	fs.StringVar(target, short, "", usage)
-}
-
-func boolFlag(fs *flag.FlagSet, target *bool, long, short, usage string) {
-	fs.BoolVar(target, long, false, usage)
-	fs.BoolVar(target, short, false, usage)
-}
-
-func stringFlagVar(fs *flag.FlagSet, target flag.Value, long, short, usage string) {
-	fs.Var(target, long, usage)
-	fs.Var(target, short, usage)
+func isUsageError(err error) bool {
+	var target usageError
+	return errors.As(err, &target)
 }
 
 func discoverImplicitHTTPFile(dir string) (string, error) {
@@ -161,7 +204,7 @@ func discoverImplicitHTTPFile(dir string) (string, error) {
 	case 1:
 		return matches[0], nil
 	case 0:
-		return "", errors.New("usage: gorc [flags] /absolute/or/relative/file.http")
+		return "", errors.New(usageText)
 	default:
 		return "", errors.New("multiple .http files found in the current directory; specify one explicitly")
 	}
