@@ -138,10 +138,7 @@ func parseSection(section, sourcePath string) (RequestSpec, map[string]string, b
 			spec.Method = matches[1]
 			spec.URL = matches[2]
 			if matches[3] != "" {
-				spec.HTTPVersion = strings.TrimPrefix(matches[3], "HTTP/")
-				if spec.HTTPVersion == "1.1" {
-					spec.HTTPVersion = "1"
-				}
+				spec.HTTPVersion = normalizeHTTPVersion(strings.TrimPrefix(matches[3], "HTTP/"))
 			}
 			state = "headers"
 			continue
@@ -165,6 +162,19 @@ func parseSection(section, sourcePath string) (RequestSpec, map[string]string, b
 	}
 
 	return spec, vars, hasRequest, nil
+}
+
+func normalizeHTTPVersion(version string) string {
+	switch {
+	case strings.HasPrefix(version, "1."):
+		return "1"
+	case strings.HasPrefix(version, "2."):
+		return "2"
+	case strings.HasPrefix(version, "3."):
+		return "3"
+	default:
+		return version
+	}
 }
 
 func parseAssignment(line string) (string, string, bool) {

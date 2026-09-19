@@ -283,13 +283,10 @@ type resolvedRequest struct {
 
 func resolveRequest(spec RequestSpec, runtime RuntimeConfig, vars resolver) (resolvedRequest, error) {
 	resolved := resolvedRequest{
-		RequestSpec:        spec,
-		Timeout:            runtime.Timeout,
-		Auth:               mergeAuth(runtime.Config.Auth, runtime.Auth, spec.Auth),
-		CertFile:           resolvePath(runtime.RootDir, runtime.Config.CertFile),
-		KeyFile:            resolvePath(runtime.RootDir, runtime.Config.KeyFile),
-		SelfSignedCertFile: resolvePath(runtime.RootDir, runtime.SelfSignedCertFile),
-		Logger:             runtime.Logger,
+		RequestSpec: spec,
+		Timeout:     runtime.Timeout,
+		Auth:        mergeAuth(runtime.Config.Auth, runtime.Auth, spec.Auth),
+		Logger:      runtime.Logger,
 	}
 	if resolved.Timeout == 0 {
 		resolved.Timeout = 30 * time.Second
@@ -316,6 +313,14 @@ func resolveRequest(spec RequestSpec, runtime RuntimeConfig, vars resolver) (res
 		return resolved, err
 	}
 	resolved.HTTPVersion = strings.ToLower(resolved.HTTPVersion)
+	resolved.CertFile, err = chooseResolvedPath(runtime.RootDir, runtime.Config.CertFile, vars)
+	if err != nil {
+		return resolved, err
+	}
+	resolved.KeyFile, err = chooseResolvedPath(runtime.RootDir, runtime.Config.KeyFile, vars)
+	if err != nil {
+		return resolved, err
+	}
 	if resolved.CACertFile, err = chooseResolvedPath(runtime.RootDir, spec.CACertFile, runtime.Config.CACertFile, vars); err != nil {
 		return resolved, err
 	}
@@ -565,6 +570,7 @@ func safeURL(raw string) string {
 		return "<invalid URL>"
 	}
 	parsed.User = nil
+	parsed.Fragment = ""
 	query := parsed.Query()
 	for key := range query {
 		query.Set(key, "[REDACTED]")
@@ -921,7 +927,8 @@ func writeResponse(w io.Writer, req RequestSpec, resp *http.Response, body []byt
 		return nil
 	}
 	mediaType, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type"))
-	if strings.HasSuffix(mediaType, "+json") || mediaType == "application/json" {
+	isJSON := strings.HasSuffix(mediaType, "+json") || mediaType == "application/json"
+	if isJSON {
 		decoder := json.NewDecoder(bytes.NewReader(body))
 		decoder.UseNumber()
 		var pretty any
@@ -933,7 +940,7 @@ func writeResponse(w io.Writer, req RequestSpec, resp *http.Response, body []byt
 			}
 		}
 	}
-	if strings.HasPrefix(mediaType, "text/") || strings.HasSuffix(mediaType, "+xml") || mediaType == "application/xml" || mediaType == "" {
+	if strings.HasPrefix(mediaType, "text/") || isJSON || strings.HasSuffix(mediaType, "+xml") || mediaType == "application/xml" || mediaType == "" {
 		_, err := fmt.Fprintln(w, string(body))
 		return err
 	}
