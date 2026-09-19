@@ -1,6 +1,7 @@
 package gorc
 
 import (
+	"context"
 	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
@@ -80,6 +81,60 @@ func TestRunTraceLoggingEmitsDiagnostics(t *testing.T) {
 		if !strings.Contains(logs, want) {
 			t.Fatalf("expected log output to contain %q, got %q", want, logs)
 		}
+	}
+}
+
+func TestSelectRequestsPreservesDistinctSelections(t *testing.T) {
+	t.Parallel()
+
+	requests := []RequestSpec{
+		{Name: "dup", Method: http.MethodPost, URL: "https://example.com", Body: "one"},
+		{Name: "dup", Method: http.MethodPost, URL: "https://example.com", Body: "two"},
+	}
+
+	selected, err := selectRequests(requests, RunOptions{Indices: []int{1, 2}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(selected) != 2 || selected[0].Body != "one" || selected[1].Body != "two" {
+		t.Fatalf("expected both requests to be preserved, got %#v", selected)
+	}
+}
+
+func TestRunInteractiveLoopsUntilQuit(t *testing.T) {
+	t.Parallel()
+
+	hits := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer server.Close()
+
+	requests := []RequestSpec{{
+		Name:    "once",
+		Method:  http.MethodGet,
+		URL:     server.URL,
+		Headers: http.Header{},
+	}}
+
+	var stdout, stderr strings.Builder
+	err := runInteractive(
+		context.Background(),
+		requests,
+		RuntimeConfig{Config: Config{Vars: map[string]string{}}, FileVars: map[string]string{}, CLIVars: map[string]string{}},
+		&stdout,
+		&stderr,
+		strings.NewReader("1\nq\n"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hits != 1 {
+		t.Fatalf("expected exactly one request execution, got %d", hits)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("expected clean quit without stderr, got %q", stderr.String())
 	}
 }
 

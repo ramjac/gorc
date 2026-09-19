@@ -28,8 +28,8 @@ func resolveString(input string, vars resolver) (string, error) {
 			return value
 		})
 		if replaced == previous {
-			if strings.Contains(replaced, "{{") {
-				return replaced, nil
+			if unresolved := variablePattern.FindStringSubmatch(replaced); len(unresolved) == 2 {
+				return "", fmt.Errorf("unresolved variable %q", strings.TrimSpace(unresolved[1]))
 			}
 			return replaced, nil
 		}

@@ -2,6 +2,7 @@ package gorc
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
@@ -21,12 +22,20 @@ import (
 	"github.com/Azure/go-ntlmssp"
 	"github.com/icholy/digest"
 	"github.com/quic-go/quic-go/http3"
+	"golang.org/x/net/http2"
 )
 
 func executeRequests(ctx context.Context, plans []executionPlan, stdout io.Writer) error {
-	jar, err := cookiejar.New(nil)
-	if err != nil {
-		return err
+	var jar http.CookieJar
+	if len(plans) > 0 {
+		jar = plans[0].Runtime.CookieJar
+	}
+	if jar == nil {
+		var err error
+		jar, err = cookiejar.New(nil)
+		if err != nil {
+			return err
+		}
 	}
 
 	for i := range plans {
@@ -132,7 +141,7 @@ func executeRequest(ctx context.Context, plan executionPlan) (*http.Response, []
 			logger.Debugf("using mTLS client certificate authentication")
 		}
 	default:
-		logger.Debugf("configuring auth scheme %q", resolved.Auth.Scheme)
+		return nil, nil, fmt.Errorf("unsupported auth scheme %q", resolved.Auth.Scheme)
 	}
 
 	client := &http.Client{
@@ -167,21 +176,23 @@ func executeRequest(ctx context.Context, plan executionPlan) (*http.Response, []
 
 type resolvedRequest struct {
 	RequestSpec
-	Timeout  time.Duration
-	Auth     AuthConfig
-	CertFile string
-	KeyFile  string
-	Logger   *Logger
+	Timeout            time.Duration
+	Auth               AuthConfig
+	CertFile           string
+	KeyFile            string
+	SelfSignedCertFile string
+	Logger             *Logger
 }
 
 func resolveRequest(spec RequestSpec, runtime RuntimeConfig, vars resolver) (resolvedRequest, error) {
 	resolved := resolvedRequest{
-		RequestSpec: spec,
-		Timeout:     runtime.Timeout,
-		Auth:        mergeAuth(runtime.Config.Auth, runtime.Auth, spec.Auth),
-		CertFile:    resolvePath(runtime.RootDir, runtime.Config.CertFile),
-		KeyFile:     resolvePath(runtime.RootDir, runtime.Config.KeyFile),
-		Logger:      runtime.Logger,
+		RequestSpec:        spec,
+		Timeout:            runtime.Timeout,
+		Auth:               mergeAuth(runtime.Config.Auth, runtime.Auth, spec.Auth),
+		CertFile:           resolvePath(runtime.RootDir, runtime.Config.CertFile),
+		KeyFile:            resolvePath(runtime.RootDir, runtime.Config.KeyFile),
+		SelfSignedCertFile: resolvePath(runtime.RootDir, runtime.Config.SelfSignedCertFile),
+		Logger:             runtime.Logger,
 	}
 	if resolved.Timeout == 0 {
 		resolved.Timeout = 30 * time.Second
@@ -197,11 +208,19 @@ func resolveRequest(spec RequestSpec, runtime RuntimeConfig, vars resolver) (res
 	}
 	resolved.BodyFile = chooseResolvedPath(runtime.RootDir, runtime.BodyFile, spec.BodyFile, vars)
 	resolved.OutputFile = chooseResolvedPath(runtime.RootDir, runtime.OutputFile, spec.OutputFile, vars)
-	resolved.Proxy = chooseResolvedValue(runtime.Proxy, runtime.Config.Proxy, spec.Proxy, vars)
-	resolved.HTTPVersion = strings.ToLower(chooseResolvedValue(runtime.HTTPVersion, runtime.Config.HTTPVersion, spec.HTTPVersion, vars))
-	resolved.CACertFile = chooseResolvedPath(runtime.RootDir, runtime.Config.CACertFile, spec.CACertFile, vars)
+	resolved.Proxy = chooseResolvedValue(runtime.Proxy, spec.Proxy, runtime.Config.Proxy, vars)
+	resolved.HTTPVersion = strings.ToLower(chooseResolvedValue(runtime.HTTPVersion, spec.HTTPVersion, runtime.Config.HTTPVersion, vars))
+	resolved.CACertFile = chooseResolvedPath(runtime.RootDir, spec.CACertFile, runtime.Config.CACertFile, vars)
+	resolved.SelfSignedCertFile = chooseResolvedPath(runtime.RootDir, spec.SelfSignedCertFile, runtime.Config.SelfSignedCertFile, vars)
 	if resolved.Auth.CACertFile != "" {
-		resolved.CACertFile = resolvePath(runtime.RootDir, resolved.Auth.CACertFile)
+		authCACert, err := resolveString(resolved.Auth.CACertFile, vars)
+		if err != nil {
+			return resolved, err
+		}
+		resolved.Auth.CACertFile = resolvePath(runtime.RootDir, authCACert)
+		if resolved.CACertFile == "" {
+			resolved.CACertFile = resolved.Auth.CACertFile
+		}
 	}
 	resolved.Insecure = runtime.Config.Insecure || runtime.Insecure || spec.Insecure
 	resolved.Headers = http.Header{}
@@ -242,12 +261,33 @@ func resolveRequest(spec RequestSpec, runtime RuntimeConfig, vars resolver) (res
 	if resolved.Auth.TokenURL, err = resolveString(resolved.Auth.TokenURL, vars); err != nil {
 		return resolved, err
 	}
-	resolved.Auth.CertFile = resolvePath(runtime.RootDir, resolved.Auth.CertFile)
-	resolved.Auth.KeyFile = resolvePath(runtime.RootDir, resolved.Auth.KeyFile)
-	resolved.Auth.CACertFile = resolvePath(runtime.RootDir, resolved.Auth.CACertFile)
+	if resolved.Auth.CertFile != "" {
+		if resolved.Auth.CertFile, err = resolveString(resolved.Auth.CertFile, vars); err != nil {
+			return resolved, err
+		}
+		resolved.Auth.CertFile = resolvePath(runtime.RootDir, resolved.Auth.CertFile)
+	}
+	if resolved.Auth.KeyFile != "" {
+		if resolved.Auth.KeyFile, err = resolveString(resolved.Auth.KeyFile, vars); err != nil {
+			return resolved, err
+		}
+		resolved.Auth.KeyFile = resolvePath(runtime.RootDir, resolved.Auth.KeyFile)
+	}
+	if resolved.Auth.CACertFile != "" {
+		if resolved.Auth.CACertFile, err = resolveString(resolved.Auth.CACertFile, vars); err != nil {
+			return resolved, err
+		}
+		resolved.Auth.CACertFile = resolvePath(runtime.RootDir, resolved.Auth.CACertFile)
+		if resolved.CACertFile == "" {
+			resolved.CACertFile = resolved.Auth.CACertFile
+		}
+	}
 
 	if resolved.HTTPVersion == "" {
 		resolved.HTTPVersion = "auto"
+	}
+	if !isSupportedHTTPVersion(resolved.HTTPVersion) {
+		return resolved, fmt.Errorf("unsupported http version %q", resolved.HTTPVersion)
 	}
 	if runtime.Logger != nil && runtime.Logger.Enabled(LogLevelDebug) {
 		runtime.Logger.Debugf("resolved request config name=%q proxy=%q output_file=%q body_file=%q", resolved.Name, resolved.Proxy, resolved.OutputFile, resolved.BodyFile)
@@ -295,23 +335,64 @@ func resolvePath(root, value string) string {
 }
 
 func mergeAuth(configAuth, cliAuth, requestAuth AuthConfig) AuthConfig {
-	merged := configAuth
-	if cliAuth.Scheme != "" {
-		merged = cliAuth
-	}
-	if requestAuth.Scheme != "" {
-		merged = requestAuth
-	}
-	if merged.CertFile == "" {
-		merged.CertFile = configAuth.CertFile
-	}
-	if merged.KeyFile == "" {
-		merged.KeyFile = configAuth.KeyFile
-	}
-	if merged.CACertFile == "" {
-		merged.CACertFile = configAuth.CACertFile
-	}
+	merged := AuthConfig{}
+	merged = overlayAuth(merged, configAuth)
+	merged = overlayAuth(merged, cliAuth)
+	merged = overlayAuth(merged, requestAuth)
 	return merged
+}
+
+func overlayAuth(base, override AuthConfig) AuthConfig {
+	if isEmptyAuth(override) {
+		return base
+	}
+	if override.Scheme != "" && base.Scheme != "" && !strings.EqualFold(override.Scheme, base.Scheme) {
+		base = AuthConfig{}
+	}
+	if override.Scheme != "" {
+		base.Scheme = override.Scheme
+	}
+	if override.Username != "" {
+		base.Username = override.Username
+	}
+	if override.Password != "" {
+		base.Password = override.Password
+	}
+	if override.Token != "" {
+		base.Token = override.Token
+	}
+	if override.CertFile != "" {
+		base.CertFile = override.CertFile
+	}
+	if override.KeyFile != "" {
+		base.KeyFile = override.KeyFile
+	}
+	if override.CACertFile != "" {
+		base.CACertFile = override.CACertFile
+	}
+	if override.TenantID != "" {
+		base.TenantID = override.TenantID
+	}
+	if override.ClientID != "" {
+		base.ClientID = override.ClientID
+	}
+	if override.ClientSecret != "" {
+		base.ClientSecret = override.ClientSecret
+	}
+	if override.Scope != "" {
+		base.Scope = override.Scope
+	}
+	if override.Resource != "" {
+		base.Resource = override.Resource
+	}
+	if override.TokenURL != "" {
+		base.TokenURL = override.TokenURL
+	}
+	return base
+}
+
+func isEmptyAuth(auth AuthConfig) bool {
+	return auth == (AuthConfig{})
 }
 
 func buildBody(resolved resolvedRequest) ([]byte, error) {
@@ -362,6 +443,19 @@ func buildTransport(resolved resolvedRequest) (http.RoundTripper, io.Closer, err
 		}
 		return transport, transport, nil
 	}
+	if resolved.HTTPVersion == "2" {
+		if !strings.EqualFold(strings.TrimSpace(resolved.URL), "") {
+			if parsedURL, err := url.Parse(resolved.URL); err == nil && parsedURL.Scheme != "https" {
+				return nil, nil, errors.New("HTTP/2 requires an https URL")
+			}
+		}
+		if resolved.Logger != nil {
+			resolved.Logger.Debugf("using strict HTTP/2 transport")
+		}
+		return &http2.Transport{
+			TLSClientConfig: tlsConfig,
+		}, nil, nil
+	}
 
 	transport := &http.Transport{
 		TLSClientConfig:   tlsConfig,
@@ -389,20 +483,29 @@ func buildTransport(resolved resolvedRequest) (http.RoundTripper, io.Closer, err
 
 func buildTLSConfig(resolved resolvedRequest) (*tls.Config, error) {
 	tlsConfig := &tls.Config{InsecureSkipVerify: resolved.Insecure} //nolint:gosec
+	rootCerts := []string{}
 	if resolved.CACertFile != "" {
-		if resolved.Logger != nil {
-			resolved.Logger.Debugf("loading custom CA certificates from %s", resolved.CACertFile)
-		}
-		pemData, err := os.ReadFile(resolved.CACertFile)
-		if err != nil {
-			return nil, err
-		}
+		rootCerts = append(rootCerts, resolved.CACertFile)
+	}
+	if resolved.SelfSignedCertFile != "" {
+		rootCerts = append(rootCerts, resolved.SelfSignedCertFile)
+	}
+	if len(rootCerts) > 0 {
 		pool, err := x509.SystemCertPool()
 		if err != nil || pool == nil {
 			pool = x509.NewCertPool()
 		}
-		if !pool.AppendCertsFromPEM(pemData) {
-			return nil, fmt.Errorf("failed to append certificates from %s", resolved.CACertFile)
+		for _, certPath := range rootCerts {
+			if resolved.Logger != nil {
+				resolved.Logger.Debugf("loading trusted certificate from %s", certPath)
+			}
+			pemData, err := os.ReadFile(certPath)
+			if err != nil {
+				return nil, err
+			}
+			if !pool.AppendCertsFromPEM(pemData) {
+				return nil, fmt.Errorf("failed to append certificates from %s", certPath)
+			}
 		}
 		tlsConfig.RootCAs = pool
 	}
@@ -437,22 +540,25 @@ func getAzureToken(ctx context.Context, resolved resolvedRequest) (string, error
 	}
 	tokenURL := resolved.Auth.TokenURL
 	form := url.Values{}
+	tenant := resolved.Auth.TenantID
+	if tenant == "" {
+		tenant = "common"
+	}
 	if tokenURL == "" {
-		tenant := resolved.Auth.TenantID
-		if tenant == "" {
-			tenant = "common"
-		}
 		if resolved.Auth.Resource != "" {
 			tokenURL = fmt.Sprintf("https://login.microsoftonline.com/%s/oauth2/token", tenant)
-			form.Set("resource", resolved.Auth.Resource)
 		} else {
 			tokenURL = fmt.Sprintf("https://login.microsoftonline.com/%s/oauth2/v2.0/token", tenant)
-			scope := resolved.Auth.Scope
-			if scope == "" {
-				scope = "https://management.azure.com/.default"
-			}
-			form.Set("scope", scope)
 		}
+	}
+	if resolved.Auth.Resource != "" {
+		form.Set("resource", resolved.Auth.Resource)
+	} else {
+		scope := resolved.Auth.Scope
+		if scope == "" {
+			scope = "https://management.azure.com/.default"
+		}
+		form.Set("scope", scope)
 	}
 
 	if resolved.Auth.ClientID == "" || resolved.Auth.ClientSecret == "" {
@@ -472,7 +578,20 @@ func getAzureToken(ctx context.Context, resolved resolvedRequest) (string, error
 		resolved.Logger.Debugf("requesting Azure AD token from %s", tokenURL)
 	}
 
-	client := &http.Client{Timeout: resolved.Timeout}
+	tokenResolved := resolved
+	tokenResolved.URL = tokenURL
+	transport, closer, err := buildTransport(tokenResolved)
+	if err != nil {
+		return "", err
+	}
+	if closer != nil {
+		defer closer.Close()
+	}
+
+	client := &http.Client{
+		Timeout:   resolved.Timeout,
+		Transport: loggingRoundTripper{base: transport, logger: resolved.Logger},
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
@@ -497,6 +616,20 @@ func getAzureToken(ctx context.Context, resolved resolvedRequest) (string, error
 		return "", errors.New("azuread token response did not include access_token")
 	}
 	return payload.AccessToken, nil
+}
+
+func isSupportedHTTPVersion(version string) bool {
+	switch version {
+	case "auto", "1", "2", "3":
+		return true
+	default:
+		return false
+	}
+}
+
+func certFingerprint(cert *x509.Certificate) string {
+	sum := sha256.Sum256(cert.Raw)
+	return fmt.Sprintf("%x", sum[:])
 }
 
 type loggingRoundTripper struct {
@@ -547,8 +680,11 @@ func withTrace(req *http.Request, logger *Logger) *http.Request {
 		TLSHandshakeStart: func() {
 			logger.Tracef("tls handshake start")
 		},
-		TLSHandshakeDone: func(_ tls.ConnectionState, err error) {
+		TLSHandshakeDone: func(state tls.ConnectionState, err error) {
 			logger.Tracef("tls handshake done err=%v", err)
+			if len(state.PeerCertificates) > 0 {
+				logger.Tracef("peer certificate subject=%q sha256=%s", state.PeerCertificates[0].Subject.String(), certFingerprint(state.PeerCertificates[0]))
+			}
 		},
 		WroteHeaders: func() {
 			logger.Tracef("request headers written")

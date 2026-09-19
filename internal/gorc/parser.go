@@ -22,7 +22,10 @@ func parseHTTPFile(path string) (HTTPFile, error) {
 		return HTTPFile{}, err
 	}
 
-	sections := splitSections(string(data))
+	sections, err := splitSections(string(data))
+	if err != nil {
+		return HTTPFile{}, err
+	}
 	result := HTTPFile{FileVars: map[string]string{}}
 
 	for idx, section := range sections {
@@ -64,8 +67,9 @@ func parseHTTPFile(path string) (HTTPFile, error) {
 	return result, nil
 }
 
-func splitSections(content string) []string {
+func splitSections(content string) ([]string, error) {
 	scanner := bufio.NewScanner(strings.NewReader(content))
+	scanner.Buffer(make([]byte, 0, 64*1024), len(content)+1)
 	var sections []string
 	var current []string
 	for scanner.Scan() {
@@ -77,8 +81,11 @@ func splitSections(content string) []string {
 		}
 		current = append(current, line)
 	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
 	sections = append(sections, strings.Join(current, "\n"))
-	return sections
+	return sections, nil
 }
 
 func parseSection(section, sourcePath string) (RequestSpec, map[string]string, bool, error) {
@@ -187,6 +194,8 @@ func parseDirective(spec *RequestSpec, line string) {
 		spec.HTTPVersion = value
 	case "ca-cert":
 		spec.CACertFile = value
+	case "self-signed-cert":
+		spec.SelfSignedCertFile = value
 	case "insecure":
 		spec.Insecure = strings.EqualFold(value, "true") || value == "1" || strings.EqualFold(value, "yes")
 	case "auth":
@@ -259,9 +268,23 @@ func parseAuthDirective(value string) AuthConfig {
 		auth.TokenURL = tokenURL
 	}
 
-	if auth.Username == "" && len(fields) >= 3 && !strings.Contains(fields[1], "=") && !strings.Contains(fields[2], "=") {
-		auth.Username = fields[1]
-		auth.Password = fields[2]
+	positional := make([]string, 0, len(fields)-1)
+	for _, field := range fields[1:] {
+		if strings.Contains(field, "=") {
+			continue
+		}
+		positional = append(positional, field)
+	}
+	if auth.Scheme != "bearer" && len(positional) > 0 && auth.Username == "" {
+		auth.Username = positional[0]
+	}
+	if auth.Scheme != "bearer" && auth.Password == "" {
+		switch {
+		case auth.Username != "" && len(positional) > 0:
+			auth.Password = positional[len(positional)-1]
+		case len(positional) > 1:
+			auth.Password = positional[1]
+		}
 	}
 
 	return auth

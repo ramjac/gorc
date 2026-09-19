@@ -12,20 +12,21 @@ type HTTPFile struct {
 }
 
 type RequestSpec struct {
-	Name        string
-	Method      string
-	URL         string
-	Headers     http.Header
-	Body        string
-	BodyFile    string
-	OutputFile  string
-	Proxy       string
-	HTTPVersion string
-	CACertFile  string
-	Insecure    bool
-	Auth        AuthConfig
-	FileVars    map[string]string
-	SourcePath  string
+	Name               string
+	Method             string
+	URL                string
+	Headers            http.Header
+	Body               string
+	BodyFile           string
+	OutputFile         string
+	Proxy              string
+	HTTPVersion        string
+	CACertFile         string
+	SelfSignedCertFile string
+	Insecure           bool
+	Auth               AuthConfig
+	FileVars           map[string]string
+	SourcePath         string
 }
 
 type AuthConfig struct {
@@ -45,55 +46,58 @@ type AuthConfig struct {
 }
 
 type Config struct {
-	Vars        map[string]string `json:"vars"`
-	Proxy       string            `json:"proxy"`
-	HTTPVersion string            `json:"http_version"`
-	LogLevel    string            `json:"log_level"`
-	Insecure    bool              `json:"insecure"`
-	CACertFile  string            `json:"ca_cert_file"`
-	CertFile    string            `json:"cert_file"`
-	KeyFile     string            `json:"key_file"`
-	Timeout     string            `json:"timeout"`
-	Auth        AuthConfig        `json:"auth"`
+	Vars               map[string]string `json:"vars"`
+	Proxy              string            `json:"proxy"`
+	HTTPVersion        string            `json:"http_version"`
+	LogLevel           string            `json:"log_level"`
+	Insecure           bool              `json:"insecure"`
+	CACertFile         string            `json:"ca_cert_file"`
+	SelfSignedCertFile string            `json:"self_signed_cert_file"`
+	CertFile           string            `json:"cert_file"`
+	KeyFile            string            `json:"key_file"`
+	Timeout            string            `json:"timeout"`
+	Auth               AuthConfig        `json:"auth"`
 }
 
 type RunOptions struct {
-	FilePath     string
-	ConfigPath   string
-	VarsFile     string
-	Vars         map[string]string
-	Names        []string
-	Indices      []int
-	All          bool
-	Interactive  bool
-	BodyFile     string
-	OutputFile   string
-	Proxy        string
-	HTTPVersion  string
-	LogLevel     string
-	Insecure     bool
-	Timeout      time.Duration
-	SelectedAuth AuthConfig
+	FilePath           string
+	ConfigPath         string
+	VarsFile           string
+	Vars               map[string]string
+	Names              []string
+	Indices            []int
+	All                bool
+	Interactive        bool
+	BodyFile           string
+	OutputFile         string
+	Proxy              string
+	HTTPVersion        string
+	LogLevel           string
+	SelfSignedCertFile string
+	Insecure           bool
+	Timeout            time.Duration
+	SelectedAuth       AuthConfig
 }
 
 type RuntimeConfig struct {
-	RootDir     string
-	ConfigPath  string
-	VarsFile    string
-	Config      Config
-	FileVars    map[string]string
-	CLIVars     map[string]string
-	CookieJar   http.CookieJar
-	Timeout     time.Duration
-	OutputFile  string
-	BodyFile    string
-	Proxy       string
-	HTTPVersion string
-	LogLevel    string
-	Insecure    bool
-	Auth        AuthConfig
-	Logger      *Logger
-	LogWriter   io.Writer
+	RootDir            string
+	ConfigPath         string
+	VarsFile           string
+	Config             Config
+	FileVars           map[string]string
+	CLIVars            map[string]string
+	CookieJar          http.CookieJar
+	Timeout            time.Duration
+	OutputFile         string
+	BodyFile           string
+	Proxy              string
+	HTTPVersion        string
+	LogLevel           string
+	SelfSignedCertFile string
+	Insecure           bool
+	Auth               AuthConfig
+	Logger             *Logger
+	LogWriter          io.Writer
 }
 
 type executionPlan struct {

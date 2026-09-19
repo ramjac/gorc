@@ -51,6 +51,7 @@ func parseRunOptions(args []string) (RunOptions, error) {
 		proxy       string
 		httpVer     string
 		logLevel    string
+		selfSigned  string
 		insecure    bool
 		all         bool
 		interactive bool
@@ -65,6 +66,7 @@ func parseRunOptions(args []string) (RunOptions, error) {
 	fs.StringVar(&proxy, "proxy", "", "proxy URL")
 	fs.StringVar(&httpVer, "http-version", "", "HTTP version: auto, 1, 2, or 3")
 	fs.StringVar(&logLevel, "log-level", "", "log level: none, error, info, debug, or trace")
+	fs.StringVar(&selfSigned, "self-signed-cert", "", "PEM file for a trusted self-signed server certificate")
 	fs.BoolVar(&insecure, "insecure", false, "skip TLS verification")
 	fs.BoolVar(&all, "all", false, "execute all requests in the .http file")
 	fs.BoolVar(&interactive, "interactive", false, "interactively choose requests to execute")
@@ -86,20 +88,21 @@ func parseRunOptions(args []string) (RunOptions, error) {
 	}
 
 	return RunOptions{
-		FilePath:    rest[0],
-		ConfigPath:  configPath,
-		VarsFile:    varsFile,
-		Vars:        parsedVars,
-		Names:       names,
-		Indices:     indices,
-		All:         all,
-		Interactive: interactive,
-		BodyFile:    bodyFile,
-		OutputFile:  outputFile,
-		Proxy:       proxy,
-		HTTPVersion: httpVer,
-		LogLevel:    logLevel,
-		Insecure:    insecure,
+		FilePath:           rest[0],
+		ConfigPath:         configPath,
+		VarsFile:           varsFile,
+		Vars:               parsedVars,
+		Names:              names,
+		Indices:            indices,
+		All:                all,
+		Interactive:        interactive,
+		BodyFile:           bodyFile,
+		OutputFile:         outputFile,
+		Proxy:              proxy,
+		HTTPVersion:        httpVer,
+		LogLevel:           logLevel,
+		SelfSignedCertFile: selfSigned,
+		Insecure:           insecure,
 	}, nil
 }
 
@@ -142,44 +145,38 @@ func run(options RunOptions, stdout, stderr io.Writer) error {
 	}
 
 	runtime := RuntimeConfig{
-		RootDir:     filepath.Dir(mustAbs(options.FilePath)),
-		ConfigPath:  configPath,
-		VarsFile:    varsPath,
-		Config:      cfg,
-		FileVars:    httpFile.FileVars,
-		CLIVars:     options.Vars,
-		CookieJar:   jar,
-		Timeout:     timeout,
-		OutputFile:  options.OutputFile,
-		BodyFile:    options.BodyFile,
-		Proxy:       options.Proxy,
-		HTTPVersion: options.HTTPVersion,
-		LogLevel:    logLevel,
-		Insecure:    options.Insecure,
-		Auth:        options.SelectedAuth,
-		Logger:      logger,
-		LogWriter:   stderr,
+		RootDir:            filepath.Dir(mustAbs(options.FilePath)),
+		ConfigPath:         configPath,
+		VarsFile:           varsPath,
+		Config:             cfg,
+		FileVars:           httpFile.FileVars,
+		CLIVars:            options.Vars,
+		CookieJar:          jar,
+		Timeout:            timeout,
+		OutputFile:         options.OutputFile,
+		BodyFile:           options.BodyFile,
+		Proxy:              options.Proxy,
+		HTTPVersion:        options.HTTPVersion,
+		LogLevel:           logLevel,
+		SelfSignedCertFile: options.SelfSignedCertFile,
+		Insecure:           options.Insecure,
+		Auth:               options.SelectedAuth,
+		Logger:             logger,
+		LogWriter:          stderr,
 	}
 
-	selected, err := selectRequests(httpFile.Requests, options, stdout, stderr)
+	if options.Interactive {
+		return runInteractive(context.Background(), httpFile.Requests, runtime, stdout, stderr, os.Stdin)
+	}
+
+	selected, err := selectRequests(httpFile.Requests, options)
 	if err != nil {
 		return err
 	}
-
-	plans := make([]executionPlan, 0, len(selected))
-	for _, request := range selected {
-		plans = append(plans, executionPlan{
-			Request: request,
-			Runtime: runtime,
-		})
-	}
-	return executeRequests(context.Background(), plans, stdout)
+	return executeRequests(context.Background(), buildExecutionPlans(selected, runtime), stdout)
 }
 
-func selectRequests(requests []RequestSpec, options RunOptions, stdout, stderr io.Writer) ([]RequestSpec, error) {
-	if options.Interactive {
-		return interactiveSelection(requests, stdout, stderr)
-	}
+func selectRequests(requests []RequestSpec, options RunOptions) ([]RequestSpec, error) {
 	if options.All {
 		return requests, nil
 	}
@@ -208,7 +205,7 @@ func selectRequests(requests []RequestSpec, options RunOptions, stdout, stderr i
 		}
 	}
 	if len(selected) > 0 {
-		return dedupeRequests(selected), nil
+		return selected, nil
 	}
 	if len(requests) == 1 {
 		return requests, nil
@@ -216,8 +213,23 @@ func selectRequests(requests []RequestSpec, options RunOptions, stdout, stderr i
 	return nil, errors.New("multiple requests found; use --all, --index, --name, or --interactive")
 }
 
-func interactiveSelection(requests []RequestSpec, stdout, stderr io.Writer) ([]RequestSpec, error) {
-	reader := bufio.NewReader(os.Stdin)
+func runInteractive(ctx context.Context, requests []RequestSpec, runtime RuntimeConfig, stdout, stderr io.Writer, input io.Reader) error {
+	reader := bufio.NewReader(input)
+	for {
+		selected, quit, err := interactiveSelection(requests, reader, stdout, stderr)
+		if err != nil {
+			return err
+		}
+		if quit {
+			return nil
+		}
+		if err := executeRequests(ctx, buildExecutionPlans(selected, runtime), stdout); err != nil {
+			return err
+		}
+	}
+}
+
+func interactiveSelection(requests []RequestSpec, reader *bufio.Reader, stdout, stderr io.Writer) ([]RequestSpec, bool, error) {
 	for {
 		fmt.Fprintln(stdout, "Available requests:")
 		for i, request := range requests {
@@ -226,14 +238,14 @@ func interactiveSelection(requests []RequestSpec, stdout, stderr io.Writer) ([]R
 		fmt.Fprint(stdout, "Select request numbers, 'all', or 'q': ")
 		line, err := reader.ReadString('\n')
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		line = strings.TrimSpace(line)
 		switch strings.ToLower(line) {
 		case "q", "quit", "exit":
-			return nil, errors.New("interactive session aborted")
+			return nil, true, nil
 		case "all":
-			return requests, nil
+			return requests, false, nil
 		}
 		indices, err := parseIndices(line)
 		if err != nil {
@@ -241,7 +253,12 @@ func interactiveSelection(requests []RequestSpec, stdout, stderr io.Writer) ([]R
 			continue
 		}
 		options := RunOptions{Indices: indices}
-		return selectRequests(requests, options, stdout, stderr)
+		selected, err := selectRequests(requests, options)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			continue
+		}
+		return selected, false, nil
 	}
 }
 
@@ -273,18 +290,15 @@ func parseVarAssignments(values []string) (map[string]string, error) {
 	return result, nil
 }
 
-func dedupeRequests(requests []RequestSpec) []RequestSpec {
-	seen := map[string]bool{}
-	var result []RequestSpec
+func buildExecutionPlans(requests []RequestSpec, runtime RuntimeConfig) []executionPlan {
+	plans := make([]executionPlan, 0, len(requests))
 	for _, request := range requests {
-		key := request.Name + "\x00" + request.Method + "\x00" + request.URL
-		if seen[key] {
-			continue
-		}
-		seen[key] = true
-		result = append(result, request)
+		plans = append(plans, executionPlan{
+			Request: request,
+			Runtime: runtime,
+		})
 	}
-	return result
+	return plans
 }
 
 func mustAbs(path string) string {

@@ -18,3 +18,12 @@ func TestResolveStringPrecedence(t *testing.T) {
 		t.Fatalf("unexpected resolved value: %q", got)
 	}
 }
+
+func TestResolveStringErrorsOnUnresolvedVariable(t *testing.T) {
+	t.Parallel()
+
+	_, err := resolveString("{{missing}}", resolver{})
+	if err == nil {
+		t.Fatal("expected unresolved variable error")
+	}
+}

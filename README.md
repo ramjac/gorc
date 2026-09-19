@@ -50,6 +50,7 @@ gorc [flags] /absolute/or/relative/file.http
 - `--proxy http://127.0.0.1:8080` use a proxy
 - `--http-version auto|1|2|3` select the HTTP version
 - `--log-level none|error|info|debug|trace` control diagnostic logging on stderr
+- `--self-signed-cert /path/to/server.pem` trust a specific self-signed server certificate
 - `--insecure` skip TLS verification
 
 By default, `gorc` stays quiet and only prints HTTP request results to stdout. Diagnostic logging is opt-in and is written to stderr.
@@ -94,6 +95,7 @@ Directives are comments placed before a request:
 # @proxy http://127.0.0.1:8080
 # @http-version 3
 # @ca-cert ./certs/ca.pem
+# @self-signed-cert ./certs/server.pem
 # @insecure true
 POST https://api.example.com/widgets
 Content-Type: application/json
@@ -178,6 +180,7 @@ Example:
   "http_version": "auto",
   "log_level": "debug",
   "proxy": "http://127.0.0.1:8080",
+  "self_signed_cert_file": "./certs/server.pem",
   "timeout": "30s",
   "vars": {
     "tenant": "example.onmicrosoft.com"
@@ -195,6 +198,7 @@ Example:
 - `debug` logging includes request selection, auth setup, transport choices, proxy usage, TLS material loading, and response-file writes.
 - `info` logging includes request start and completion status lines.
 - `error` logging includes transport and request failures.
-- HTTP/2 uses Go's standard TLS negotiation.
+- HTTP/2 selection is strict in this CLI and currently requires an `https://` endpoint.
+- A configured or directed self-signed certificate is added to the client trust store without disabling all TLS verification.
 - HTTP/3 requires HTTPS and does not currently support proxies in this CLI.
 - Cookies are shared only within a single CLI run.
