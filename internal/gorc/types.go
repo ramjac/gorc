@@ -96,6 +96,7 @@ type RuntimeConfig struct {
 	HTTPVersion        string
 	LogLevel           string
 	ColorEnabled       bool
+	Colorizer          *Colorizer
 	SelfSignedCertFile string
 	Insecure           bool
 	Auth               AuthConfig

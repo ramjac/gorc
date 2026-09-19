@@ -10,7 +10,7 @@ func TestLoggerUsesColorByDefault(t *testing.T) {
 	t.Parallel()
 
 	var out strings.Builder
-	logger, err := NewLogger("info", &out, true)
+	logger, err := NewLogger("info", &out, NewColorizer(true))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -24,7 +24,7 @@ func TestLoggerCanDisableColor(t *testing.T) {
 	t.Parallel()
 
 	var out strings.Builder
-	logger, err := NewLogger("info", &out, false)
+	logger, err := NewLogger("info", &out, NewColorizer(false))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +43,7 @@ func TestWriteResponseUsesColorWhenEnabled(t *testing.T) {
 		StatusCode: http.StatusOK,
 		Header:     http.Header{"Content-Type": []string{"text/plain"}},
 	}
-	err := writeResponse(&out, RequestSpec{Name: "demo"}, resp, []byte("ok"), true)
+	err := writeResponse(&out, RequestSpec{Name: "demo"}, resp, []byte("ok"), NewColorizer(true))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +61,7 @@ func TestWriteResponseCanDisableColor(t *testing.T) {
 		StatusCode: http.StatusOK,
 		Header:     http.Header{"Content-Type": []string{"text/plain"}},
 	}
-	err := writeResponse(&out, RequestSpec{Name: "demo"}, resp, []byte("ok"), false)
+	err := writeResponse(&out, RequestSpec{Name: "demo"}, resp, []byte("ok"), NewColorizer(false))
 	if err != nil {
 		t.Fatal(err)
 	}

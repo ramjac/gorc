@@ -53,7 +53,7 @@ func executeRequests(ctx context.Context, plans []executionPlan, stdout io.Write
 				return err
 			}
 		}
-		if err := writeResponse(stdout, plan.Request, resp, body, plan.Runtime.ColorEnabled); err != nil {
+		if err := writeResponse(stdout, plan.Request, resp, body, plan.Runtime.Colorizer); err != nil {
 			return err
 		}
 	}
@@ -701,8 +701,10 @@ func withTrace(req *http.Request, logger *Logger) *http.Request {
 	return req.WithContext(httptrace.WithClientTrace(req.Context(), trace))
 }
 
-func writeResponse(w io.Writer, req RequestSpec, resp *http.Response, body []byte, colorEnabled bool) error {
-	colorizer := NewColorizer(colorEnabled)
+func writeResponse(w io.Writer, req RequestSpec, resp *http.Response, body []byte, colorizer *Colorizer) error {
+	if colorizer == nil {
+		colorizer = NewColorizer(false)
+	}
 	if _, err := fmt.Fprintf(w, "%s\n", colorizer.Title("### %s", req.Name)); err != nil {
 		return err
 	}

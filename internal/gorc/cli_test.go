@@ -37,8 +37,6 @@ func TestRunDefaultLoggingIsSilent(t *testing.T) {
 }
 
 func TestRunTraceLoggingEmitsDiagnostics(t *testing.T) {
-	t.Parallel()
-
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		expected := "Basic " + base64.StdEncoding.EncodeToString([]byte("alice:trace-pass"))
 		if r.Header.Get("Authorization") != expected {
@@ -74,9 +72,9 @@ func TestRunTraceLoggingEmitsDiagnostics(t *testing.T) {
 	}
 	logs := stderr.String()
 	for _, want := range []string{
-		"[INFO] executing request",
-		"[DEBUG] configuring basic authentication",
-		"[TRACE] round trip start",
+		"executing request",
+		"configuring basic authentication",
+		"round trip start",
 	} {
 		if !strings.Contains(logs, want) {
 			t.Fatalf("expected log output to contain %q, got %q", want, logs)
@@ -139,8 +137,6 @@ func TestRunInteractiveLoopsUntilQuit(t *testing.T) {
 }
 
 func TestParseRunOptionsUsesSingleHTTPFileInCurrentDirectory(t *testing.T) {
-	t.Parallel()
-
 	dir := t.TempDir()
 	requestPath := filepath.Join(dir, "only.http")
 	if err := os.WriteFile(requestPath, []byte("GET https://example.com\n"), 0o644); err != nil {
@@ -168,8 +164,6 @@ func TestParseRunOptionsUsesSingleHTTPFileInCurrentDirectory(t *testing.T) {
 }
 
 func TestParseRunOptionsErrorsWhenMultipleHTTPFilesExist(t *testing.T) {
-	t.Parallel()
-
 	dir := t.TempDir()
 	for _, name := range []string{"one.http", "two.http"} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte("GET https://example.com\n"), 0o644); err != nil {

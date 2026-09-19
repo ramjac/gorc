@@ -57,36 +57,21 @@ func parseRunOptions(args []string) (RunOptions, error) {
 		all         bool
 		interactive bool
 	)
-	fs.Var(&names, "name", "request name to execute")
-	fs.Var(&names, "n", "request name to execute")
-	fs.Var(&vars, "var", "variable assignment key=value")
-	fs.Var(&vars, "v", "variable assignment key=value")
-	fs.StringVar(&indexes, "index", "", "comma-separated request indexes (1-based)")
-	fs.StringVar(&indexes, "x", "", "comma-separated request indexes (1-based)")
-	fs.StringVar(&configPath, "config", "", "config file path")
-	fs.StringVar(&configPath, "c", "", "config file path")
-	fs.StringVar(&varsFile, "vars-file", "", "JSON file containing variables")
-	fs.StringVar(&varsFile, "e", "", "JSON file containing variables")
-	fs.StringVar(&outputFile, "output", "", "file to save the response body")
-	fs.StringVar(&outputFile, "o", "", "file to save the response body")
-	fs.StringVar(&bodyFile, "body-file", "", "file to read the request body from")
-	fs.StringVar(&bodyFile, "b", "", "file to read the request body from")
-	fs.StringVar(&proxy, "proxy", "", "proxy URL")
-	fs.StringVar(&proxy, "p", "", "proxy URL")
-	fs.StringVar(&httpVer, "http-version", "", "HTTP version: auto, 1, 2, or 3")
-	fs.StringVar(&httpVer, "H", "", "HTTP version: auto, 1, 2, or 3")
-	fs.StringVar(&logLevel, "log-level", "", "log level: none, error, info, debug, or trace")
-	fs.StringVar(&logLevel, "l", "", "log level: none, error, info, debug, or trace")
-	fs.BoolVar(&noColor, "no-color", false, "disable colored output")
-	fs.BoolVar(&noColor, "C", false, "disable colored output")
-	fs.StringVar(&selfSigned, "self-signed-cert", "", "PEM file for a trusted self-signed server certificate")
-	fs.StringVar(&selfSigned, "s", "", "PEM file for a trusted self-signed server certificate")
-	fs.BoolVar(&insecure, "insecure", false, "skip TLS verification")
-	fs.BoolVar(&insecure, "k", false, "skip TLS verification")
-	fs.BoolVar(&all, "all", false, "execute all requests in the .http file")
-	fs.BoolVar(&all, "a", false, "execute all requests in the .http file")
-	fs.BoolVar(&interactive, "interactive", false, "interactively choose requests to execute")
-	fs.BoolVar(&interactive, "i", false, "interactively choose requests to execute")
+	stringFlagVar(fs, &names, "name", "n", "request name to execute")
+	stringFlagVar(fs, &vars, "var", "v", "variable assignment key=value")
+	stringFlag(fs, &indexes, "index", "x", "comma-separated request indexes (1-based)")
+	stringFlag(fs, &configPath, "config", "c", "config file path")
+	stringFlag(fs, &varsFile, "vars-file", "e", "JSON file containing variables")
+	stringFlag(fs, &outputFile, "output", "o", "file to save the response body")
+	stringFlag(fs, &bodyFile, "body-file", "b", "file to read the request body from")
+	stringFlag(fs, &proxy, "proxy", "p", "proxy URL")
+	stringFlag(fs, &httpVer, "http-version", "H", "HTTP version: auto, 1, 2, or 3")
+	stringFlag(fs, &logLevel, "log-level", "l", "log level: none, error, info, debug, or trace")
+	boolFlag(fs, &noColor, "no-color", "C", "disable colored output")
+	stringFlag(fs, &selfSigned, "self-signed-cert", "s", "PEM file for a trusted self-signed server certificate")
+	boolFlag(fs, &insecure, "insecure", "k", "skip TLS verification")
+	boolFlag(fs, &all, "all", "a", "execute all requests in the .http file")
+	boolFlag(fs, &interactive, "interactive", "i", "interactively choose requests to execute")
 	if err := fs.Parse(args); err != nil {
 		return RunOptions{}, err
 	}
@@ -129,6 +114,21 @@ func parseRunOptions(args []string) (RunOptions, error) {
 		SelfSignedCertFile: selfSigned,
 		Insecure:           insecure,
 	}, nil
+}
+
+func stringFlag(fs *flag.FlagSet, target *string, long, short, usage string) {
+	fs.StringVar(target, long, "", usage)
+	fs.StringVar(target, short, "", usage)
+}
+
+func boolFlag(fs *flag.FlagSet, target *bool, long, short, usage string) {
+	fs.BoolVar(target, long, false, usage)
+	fs.BoolVar(target, short, false, usage)
+}
+
+func stringFlagVar(fs *flag.FlagSet, target flag.Value, long, short, usage string) {
+	fs.Var(target, long, usage)
+	fs.Var(target, short, usage)
 }
 
 func discoverImplicitHTTPFile(dir string) (string, error) {
@@ -185,8 +185,9 @@ func run(options RunOptions, stdout, stderr io.Writer) error {
 		logLevel = options.LogLevel
 	}
 	noColor := cfg.NoColor || options.NoColor
-	colorEnabled := shouldEnableColor(noColor)
-	logger, err := NewLogger(logLevel, stderr, colorEnabled)
+	colorEnabled := !noColor
+	colorizer := NewColorizer(colorEnabled)
+	logger, err := NewLogger(logLevel, stderr, colorizer)
 	if err != nil {
 		return err
 	}
@@ -210,6 +211,7 @@ func run(options RunOptions, stdout, stderr io.Writer) error {
 		HTTPVersion:        options.HTTPVersion,
 		LogLevel:           logLevel,
 		ColorEnabled:       colorEnabled,
+		Colorizer:          colorizer,
 		SelfSignedCertFile: options.SelfSignedCertFile,
 		Insecure:           options.Insecure,
 		Auth:               options.SelectedAuth,
