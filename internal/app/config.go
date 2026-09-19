@@ -1,4 +1,4 @@
-package gorc
+package app
 
 import (
 	"encoding/json"
