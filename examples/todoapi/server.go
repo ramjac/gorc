@@ -29,6 +29,7 @@ const (
 	azureClientSecret = "todo-demo-secret"
 	azureTenantID     = "todo-demo-tenant"
 	azureScope        = "api://todo-demo/.default"
+	azureResource     = "api://todo-demo"
 	azureAccessToken  = "todo-demo-azure-access-token"
 	ntlmUsername      = "demo"
 	ntlmPassword      = "ntlm-pass"
@@ -126,7 +127,7 @@ type demoServer struct {
 }
 
 func newDemoServer(selfSignedAddr, caAddr, mtlsAddr string, logger *log.Logger) (*demoServer, error) {
-	certs, err := ensureCertificates(defaultCertificateDir())
+	certs, err := ensureCertificates(defaultCertificateDir(), certificateHosts(selfSignedAddr, caAddr, mtlsAddr))
 	if err != nil {
 		return nil, err
 	}
@@ -446,8 +447,18 @@ func (s *demoServer) handleAzureToken(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "invalid client credentials"})
 		return
 	}
-	if r.Form.Get("scope") == "" && r.Form.Get("resource") == "" {
+	scope := r.Form.Get("scope")
+	resource := r.Form.Get("resource")
+	if scope == "" && resource == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "scope or resource is required"})
+		return
+	}
+	if scope != "" && scope != azureScope {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "unexpected scope"})
+		return
+	}
+	if resource != "" && resource != azureResource {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "unexpected resource"})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{

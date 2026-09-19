@@ -90,8 +90,18 @@ func parseRunOptions(args []string) (RunOptions, error) {
 func newCLIParser(stdout, stderr io.Writer, runner func(context.Context, RunOptions) error) *cliParser {
 	parser := &cliParser{}
 	cmd := &cobra.Command{
-		Use:                   "gorc [flags] /absolute/or/relative/file.http",
-		Short:                 "Execute REST requests defined in .http files",
+		Use:   "gorc [flags] /absolute/or/relative/file.http",
+		Short: "Execute REST requests defined in .http files",
+		Long: "gorc executes one or more REST requests defined in a .http file.\n\n" +
+			"If no file is provided and the current directory contains exactly one .http file, gorc uses it automatically. " +
+			"For multi-request files, use --all, --index, --name, or --interactive to choose which requests to run.",
+		Example: strings.Join([]string{
+			"gorc requests.http",
+			"gorc --all requests.http",
+			"gorc --name login --name profile requests.http",
+			"gorc --interactive requests.http",
+			"gorc --config gorc.json requests.http",
+		}, "\n"),
 		SilenceErrors:         true,
 		SilenceUsage:          true,
 		DisableFlagsInUseLine: true,
@@ -227,9 +237,6 @@ func run(ctx context.Context, options RunOptions, stdout, stderr io.Writer) erro
 	if err != nil {
 		return err
 	}
-	for key, value := range varsFile {
-		httpFile.FileVars[key] = value
-	}
 
 	timeout, err := parseTimeout(cfg.Timeout)
 	if err != nil {
@@ -257,6 +264,7 @@ func run(ctx context.Context, options RunOptions, stdout, stderr io.Writer) erro
 		VarsFile:           varsPath,
 		Config:             cfg,
 		FileVars:           httpFile.FileVars,
+		VarsFileVars:       varsFile,
 		CLIVars:            options.Vars,
 		CookieJar:          jar,
 		Timeout:            timeout,

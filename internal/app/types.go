@@ -87,6 +87,7 @@ type RuntimeConfig struct {
 	VarsFile           string
 	Config             Config
 	FileVars           map[string]string
+	VarsFileVars       map[string]string
 	CLIVars            map[string]string
 	CookieJar          http.CookieJar
 	Timeout            time.Duration

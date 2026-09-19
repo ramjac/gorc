@@ -110,10 +110,14 @@ func (c *Colorizer) LogLabel(level LogLevel) string {
 }
 
 func formatHeaderLine(colorizer *Colorizer, key string, values []string) string {
-	if len(values) == 0 {
-		return fmt.Sprintf("%s:", colorizer.Header("%s", key))
+	label := key
+	if colorizer != nil {
+		label = colorizer.Header("%s", key)
 	}
-	return fmt.Sprintf("%s: %s", colorizer.Header("%s", key), values[0]) + joinExtraValues(values[1:])
+	if len(values) == 0 {
+		return fmt.Sprintf("%s:", label)
+	}
+	return fmt.Sprintf("%s: %s", label, values[0]) + joinExtraValues(values[1:])
 }
 
 func joinExtraValues(values []string) string {
@@ -126,6 +130,9 @@ func joinExtraValues(values []string) string {
 func formatResponseStatus(colorizer *Colorizer, resp *http.Response) string {
 	if resp == nil {
 		return ""
+	}
+	if colorizer == nil {
+		return resp.Status
 	}
 	return colorizer.Status(resp.Status, resp.StatusCode)
 }

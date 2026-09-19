@@ -145,7 +145,7 @@ Azure AD also supports:
 
 - `resource=...` to use the legacy token endpoint
 - `token_url=...` to override the token endpoint
-- `AZURE_ACCESS_TOKEN` to supply a bearer token directly
+- `token=...` to supply a bearer token directly, including values from `{{$env ...}}`
 
 ### Request body from file
 

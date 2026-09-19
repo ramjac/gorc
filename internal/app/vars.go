@@ -12,6 +12,7 @@ var variablePattern = regexp.MustCompile(`\{\{\s*([^{}]+?)\s*\}\}`)
 type resolver struct {
 	RequestVars map[string]string
 	FileVars    map[string]string
+	VarsFile    map[string]string
 	ConfigVars  map[string]string
 	CLIVars     map[string]string
 }
@@ -66,6 +67,9 @@ func resolveVariable(key string, vars resolver) (string, bool) {
 		return value, true
 	}
 	if value, ok := vars.FileVars[key]; ok {
+		return value, true
+	}
+	if value, ok := vars.VarsFile[key]; ok {
 		return value, true
 	}
 	if value, ok := vars.ConfigVars[key]; ok {

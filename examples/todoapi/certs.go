@@ -13,6 +13,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
+	"strings"
 	"time"
 )
 
@@ -38,7 +40,7 @@ func defaultCertificateDir() string {
 	return filepath.Join(filepath.Dir(file), "generated")
 }
 
-func ensureCertificates(dir string) (certificateBundle, error) {
+func ensureCertificates(dir string, hosts []string) (certificateBundle, error) {
 	bundle := certificateBundle{
 		Dir:            dir,
 		SelfSignedCert: filepath.Join(dir, "selfsigned-cert.pem"),
@@ -51,7 +53,13 @@ func ensureCertificates(dir string) (certificateBundle, error) {
 		MTLSClientKey:  filepath.Join(dir, "mtls-client-key.pem"),
 	}
 	if certificatesExist(bundle) {
-		return bundle, nil
+		ok, err := certificatesMatchHosts(bundle, hosts)
+		if err != nil {
+			return bundle, err
+		}
+		if ok {
+			return bundle, nil
+		}
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return bundle, err
@@ -61,15 +69,15 @@ func ensureCertificates(dir string) (certificateBundle, error) {
 	if err != nil {
 		return bundle, err
 	}
-	selfCertPEM, selfKeyPEM, err := generateSelfSignedServerCert("gorc demo self-signed")
+	selfCertPEM, selfKeyPEM, err := generateSelfSignedServerCert("gorc demo self-signed", hosts)
 	if err != nil {
 		return bundle, err
 	}
-	caServerCertPEM, caServerKeyPEM, err := generateSignedLeaf(caCert, caKey, "gorc demo CA server", []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth})
+	caServerCertPEM, caServerKeyPEM, err := generateSignedLeaf(caCert, caKey, "gorc demo CA server", []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}, hosts)
 	if err != nil {
 		return bundle, err
 	}
-	mtlsClientCertPEM, mtlsClientKeyPEM, err := generateSignedLeaf(caCert, caKey, "gorc demo client", []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth})
+	mtlsClientCertPEM, mtlsClientKeyPEM, err := generateSignedLeaf(caCert, caKey, "gorc demo client", []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, nil)
 	if err != nil {
 		return bundle, err
 	}
@@ -105,6 +113,45 @@ func certificatesExist(bundle certificateBundle) bool {
 	return true
 }
 
+func certificatesMatchHosts(bundle certificateBundle, hosts []string) (bool, error) {
+	for _, path := range []string{bundle.SelfSignedCert, bundle.CAServerCert} {
+		cert, err := readCertificate(path)
+		if err != nil {
+			return false, err
+		}
+		for _, host := range hosts {
+			if !certificateMatchesHost(cert, host) {
+				return false, nil
+			}
+		}
+	}
+	return true, nil
+}
+
+func readCertificate(path string) (*x509.Certificate, error) {
+	pemData, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	block, _ := pem.Decode(pemData)
+	if block == nil {
+		return nil, fmt.Errorf("failed to decode certificate from %s", path)
+	}
+	return x509.ParseCertificate(block.Bytes)
+}
+
+func certificateMatchesHost(cert *x509.Certificate, host string) bool {
+	if ip := net.ParseIP(host); ip != nil {
+		for _, candidate := range cert.IPAddresses {
+			if candidate.Equal(ip) {
+				return true
+			}
+		}
+		return false
+	}
+	return slices.Contains(cert.DNSNames, host)
+}
+
 func generateCA(commonName string) ([]byte, []byte, *x509.Certificate, *ecdsa.PrivateKey, error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -131,12 +178,12 @@ func generateCA(commonName string) ([]byte, []byte, *x509.Certificate, *ecdsa.Pr
 	return pemEncodeCertificate(der), pemEncodeECPrivateKey(key), cert, key, nil
 }
 
-func generateSelfSignedServerCert(commonName string) ([]byte, []byte, error) {
+func generateSelfSignedServerCert(commonName string, hosts []string) ([]byte, []byte, error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, nil, err
 	}
-	tmpl := leafTemplate(commonName, []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth})
+	tmpl := leafTemplate(commonName, []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}, hosts)
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
 	if err != nil {
 		return nil, nil, err
@@ -144,12 +191,12 @@ func generateSelfSignedServerCert(commonName string) ([]byte, []byte, error) {
 	return pemEncodeCertificate(der), pemEncodeECPrivateKey(key), nil
 }
 
-func generateSignedLeaf(ca *x509.Certificate, caKey *ecdsa.PrivateKey, commonName string, usages []x509.ExtKeyUsage) ([]byte, []byte, error) {
+func generateSignedLeaf(ca *x509.Certificate, caKey *ecdsa.PrivateKey, commonName string, usages []x509.ExtKeyUsage, hosts []string) ([]byte, []byte, error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, nil, err
 	}
-	tmpl := leafTemplate(commonName, usages)
+	tmpl := leafTemplate(commonName, usages, hosts)
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, ca, &key.PublicKey, caKey)
 	if err != nil {
 		return nil, nil, err
@@ -157,7 +204,23 @@ func generateSignedLeaf(ca *x509.Certificate, caKey *ecdsa.PrivateKey, commonNam
 	return pemEncodeCertificate(der), pemEncodeECPrivateKey(key), nil
 }
 
-func leafTemplate(commonName string, usages []x509.ExtKeyUsage) *x509.Certificate {
+func leafTemplate(commonName string, usages []x509.ExtKeyUsage, hosts []string) *x509.Certificate {
+	dnsNames := make([]string, 0, len(hosts))
+	ipAddresses := make([]net.IP, 0, len(hosts))
+	for _, host := range hosts {
+		if host == "" {
+			continue
+		}
+		if ip := net.ParseIP(host); ip != nil {
+			ipAddresses = append(ipAddresses, ip)
+			continue
+		}
+		dnsNames = append(dnsNames, host)
+	}
+	if len(dnsNames) == 0 && len(ipAddresses) == 0 {
+		dnsNames = append(dnsNames, "localhost")
+		ipAddresses = append(ipAddresses, net.ParseIP("127.0.0.1"))
+	}
 	return &x509.Certificate{
 		SerialNumber:          serialNumber(),
 		Subject:               pkix.Name{CommonName: commonName},
@@ -166,8 +229,44 @@ func leafTemplate(commonName string, usages []x509.ExtKeyUsage) *x509.Certificat
 		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage:           usages,
 		BasicConstraintsValid: true,
-		DNSNames:              []string{"localhost"},
-		IPAddresses:           []net.IP{net.ParseIP("127.0.0.1")},
+		DNSNames:              dnsNames,
+		IPAddresses:           ipAddresses,
+	}
+}
+
+func certificateHosts(addrs ...string) []string {
+	seen := map[string]struct{}{}
+	hosts := make([]string, 0, len(addrs)+1)
+	addHost := func(host string) {
+		host = normalizeCertificateHost(host)
+		if host == "" {
+			return
+		}
+		if _, ok := seen[host]; ok {
+			return
+		}
+		seen[host] = struct{}{}
+		hosts = append(hosts, host)
+	}
+	addHost("localhost")
+	for _, addr := range addrs {
+		host, _, err := net.SplitHostPort(addr)
+		if err != nil {
+			addHost(addr)
+			continue
+		}
+		addHost(host)
+	}
+	return hosts
+}
+
+func normalizeCertificateHost(host string) string {
+	host = strings.TrimSpace(host)
+	switch host {
+	case "", "0.0.0.0", "::", "[::]":
+		return "127.0.0.1"
+	default:
+		return strings.Trim(host, "[]")
 	}
 }
 

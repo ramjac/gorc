@@ -29,7 +29,7 @@ go run ./cmd/gorc -c ./examples/gorc-demo.json ./examples/todo-demo.http --all
 You can also run just one request by name, for example:
 
 ```bash
-go run ./cmd/gorc -c ./examples/gorc-demo.json ./examples/todo-demo.http --name ntlm todos
+go run ./cmd/gorc -c ./examples/gorc-demo.json ./examples/todo-demo.http --name "mtls todos"
 ```
 
 The demo request file exercises:

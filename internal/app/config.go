@@ -1,11 +1,14 @@
 package app
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"time"
 
+	"github.com/go-viper/mapstructure/v2"
 	"github.com/spf13/viper"
 )
 
@@ -66,7 +69,9 @@ func readConfig(path string, allowMissing bool) (Config, string, bool, error) {
 	}
 
 	cfg := Config{}
-	if err := v.Unmarshal(&cfg); err != nil {
+	if err := v.Unmarshal(&cfg, func(dc *mapstructure.DecoderConfig) {
+		dc.TagName = "mapstructure"
+	}); err != nil {
 		return Config{}, "", false, err
 	}
 	if cfg.Vars == nil {
@@ -90,11 +95,40 @@ func loadVarsFile(path string) (map[string]string, string, error) {
 		return nil, "", err
 	}
 
-	vars := map[string]string{}
-	if err := v.Unmarshal(&vars); err != nil {
-		return nil, "", err
+	settings := v.AllSettings()
+	vars := make(map[string]string, len(settings))
+	for key, value := range settings {
+		text, err := stringifyConfigValue(value)
+		if err != nil {
+			return nil, "", fmt.Errorf("vars file value %q: %w", key, err)
+		}
+		vars[key] = text
 	}
 	return vars, abs, nil
+}
+
+func stringifyConfigValue(value any) (string, error) {
+	switch typed := value.(type) {
+	case nil:
+		return "", nil
+	case string:
+		return typed, nil
+	case bool:
+		if typed {
+			return "true", nil
+		}
+		return "false", nil
+	case int, int8, int16, int32, int64,
+		uint, uint8, uint16, uint32, uint64,
+		float32, float64:
+		return fmt.Sprint(typed), nil
+	default:
+		data, err := json.Marshal(typed)
+		if err != nil {
+			return "", err
+		}
+		return string(data), nil
+	}
 }
 
 func parseTimeout(value string) (time.Duration, error) {

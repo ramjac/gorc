@@ -69,3 +69,21 @@ func TestWriteResponseCanDisableColor(t *testing.T) {
 		t.Fatalf("expected no ANSI color output, got %q", out.String())
 	}
 }
+
+func TestWriteResponseHandlesNilColorizer(t *testing.T) {
+	t.Parallel()
+
+	var out strings.Builder
+	resp := &http.Response{
+		Status:     "200 OK",
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/plain"}},
+	}
+	err := writeResponse(&out, RequestSpec{Name: "demo"}, resp, []byte("ok"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "200 OK") {
+		t.Fatalf("expected plain status output, got %q", out.String())
+	}
+}

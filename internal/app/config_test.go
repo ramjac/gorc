@@ -40,7 +40,7 @@ func TestLoadVarsFileReadsJSONValues(t *testing.T) {
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "vars.json")
-	if err := os.WriteFile(path, []byte(`{"token":"abc","user":"alice"}`), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(`{"token":"abc","user":"alice","port":9443,"enabled":true,"scopes":["read","write"]}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -53,5 +53,8 @@ func TestLoadVarsFileReadsJSONValues(t *testing.T) {
 	}
 	if vars["token"] != "abc" || vars["user"] != "alice" {
 		t.Fatalf("unexpected vars %#v", vars)
+	}
+	if vars["port"] != "9443" || vars["enabled"] != "true" || vars["scopes"] != `["read","write"]` {
+		t.Fatalf("expected scalar and structured values to stringify, got %#v", vars)
 	}
 }

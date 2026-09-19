@@ -68,6 +68,7 @@ func executeRequest(ctx context.Context, plan executionPlan) (*http.Response, []
 	resolver := resolver{
 		RequestVars: reqSpec.FileVars,
 		FileVars:    runtime.FileVars,
+		VarsFile:    runtime.VarsFileVars,
 		ConfigVars:  runtime.Config.Vars,
 		CLIVars:     runtime.CLIVars,
 	}
@@ -190,7 +191,7 @@ func resolveRequest(spec RequestSpec, runtime RuntimeConfig, vars resolver) (res
 		Auth:               mergeAuth(runtime.Config.Auth, runtime.Auth, spec.Auth),
 		CertFile:           resolvePath(runtime.RootDir, runtime.Config.CertFile),
 		KeyFile:            resolvePath(runtime.RootDir, runtime.Config.KeyFile),
-		SelfSignedCertFile: resolvePath(runtime.RootDir, runtime.Config.SelfSignedCertFile),
+		SelfSignedCertFile: resolvePath(runtime.RootDir, runtime.SelfSignedCertFile),
 		Logger:             runtime.Logger,
 	}
 	if resolved.Timeout == 0 {
@@ -207,10 +208,10 @@ func resolveRequest(spec RequestSpec, runtime RuntimeConfig, vars resolver) (res
 	}
 	resolved.BodyFile = chooseResolvedPath(runtime.RootDir, runtime.BodyFile, spec.BodyFile, vars)
 	resolved.OutputFile = chooseResolvedPath(runtime.RootDir, runtime.OutputFile, spec.OutputFile, vars)
-	resolved.Proxy = chooseResolvedValue(runtime.Proxy, spec.Proxy, runtime.Config.Proxy, vars)
-	resolved.HTTPVersion = strings.ToLower(chooseResolvedValue(runtime.HTTPVersion, spec.HTTPVersion, runtime.Config.HTTPVersion, vars))
+	resolved.Proxy = chooseResolvedValue(spec.Proxy, runtime.Proxy, runtime.Config.Proxy, vars)
+	resolved.HTTPVersion = strings.ToLower(chooseResolvedValue(spec.HTTPVersion, runtime.HTTPVersion, runtime.Config.HTTPVersion, vars))
 	resolved.CACertFile = chooseResolvedPath(runtime.RootDir, spec.CACertFile, runtime.Config.CACertFile, vars)
-	resolved.SelfSignedCertFile = chooseResolvedPath(runtime.RootDir, spec.SelfSignedCertFile, runtime.Config.SelfSignedCertFile, vars)
+	resolved.SelfSignedCertFile = chooseResolvedPath(runtime.RootDir, spec.SelfSignedCertFile, runtime.SelfSignedCertFile, runtime.Config.SelfSignedCertFile, vars)
 	if resolved.Auth.CACertFile != "" {
 		authCACert, err := resolveString(resolved.Auth.CACertFile, vars)
 		if err != nil {
@@ -281,6 +282,12 @@ func resolveRequest(spec RequestSpec, runtime RuntimeConfig, vars resolver) (res
 			resolved.CACertFile = resolved.Auth.CACertFile
 		}
 	}
+	if resolved.Auth.CertFile == "" {
+		resolved.Auth.CertFile = resolved.CertFile
+	}
+	if resolved.Auth.KeyFile == "" {
+		resolved.Auth.KeyFile = resolved.KeyFile
+	}
 
 	if resolved.HTTPVersion == "" {
 		resolved.HTTPVersion = "auto"
@@ -296,6 +303,9 @@ func resolveRequest(spec RequestSpec, runtime RuntimeConfig, vars resolver) (res
 }
 
 func chooseResolvedValue(values ...any) string {
+	if len(values) == 0 {
+		return ""
+	}
 	var vars resolver
 	if last, ok := values[len(values)-1].(resolver); ok {
 		vars = last
@@ -310,7 +320,6 @@ func chooseResolvedValue(values ...any) string {
 		if err == nil {
 			return resolved
 		}
-		return value
 	}
 	return ""
 }
@@ -443,7 +452,7 @@ func buildTransport(resolved resolvedRequest) (http.RoundTripper, io.Closer, err
 		return transport, transport, nil
 	}
 	if resolved.HTTPVersion == "2" {
-		if !strings.EqualFold(strings.TrimSpace(resolved.URL), "") {
+		if strings.TrimSpace(resolved.URL) != "" {
 			if parsedURL, err := url.Parse(resolved.URL); err == nil && parsedURL.Scheme != "https" {
 				return nil, nil, errors.New("HTTP/2 requires an https URL")
 			}
@@ -534,8 +543,8 @@ func buildTLSConfig(resolved resolvedRequest) (*tls.Config, error) {
 }
 
 func getAzureToken(ctx context.Context, resolved resolvedRequest) (string, error) {
-	if token := os.Getenv("AZURE_ACCESS_TOKEN"); token != "" {
-		return token, nil
+	if resolved.Auth.Token != "" {
+		return resolved.Auth.Token, nil
 	}
 	tokenURL := resolved.Auth.TokenURL
 	form := url.Values{}
@@ -561,7 +570,7 @@ func getAzureToken(ctx context.Context, resolved resolvedRequest) (string, error
 	}
 
 	if resolved.Auth.ClientID == "" || resolved.Auth.ClientSecret == "" {
-		return "", errors.New("azuread auth requires client_id and client_secret or AZURE_ACCESS_TOKEN")
+		return "", errors.New("azuread auth requires token or client_id and client_secret")
 	}
 
 	form.Set("grant_type", "client_credentials")
@@ -702,6 +711,9 @@ func withTrace(req *http.Request, logger *Logger) *http.Request {
 }
 
 func writeResponse(w io.Writer, req RequestSpec, resp *http.Response, body []byte, colorizer *Colorizer) error {
+	if resp == nil {
+		return errors.New("response is required")
+	}
 	if colorizer == nil {
 		colorizer = NewColorizer(false)
 	}

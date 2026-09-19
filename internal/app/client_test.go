@@ -127,6 +127,8 @@ func TestResolveRequestRequestOverridesConfigAndExpandsAuthPaths(t *testing.T) {
 		RootDir:            dir,
 		FileVars:           map[string]string{"proxy": "http://request-proxy", "cert": "client.pem", "key": "client.key", "ca": "ca.pem"},
 		CLIVars:            map[string]string{},
+		Proxy:              "http://cli-proxy",
+		HTTPVersion:        "2",
 		SelfSignedCertFile: filepath.Join(dir, "cli.pem"),
 		Config: Config{
 			Vars:               map[string]string{},
@@ -182,6 +184,196 @@ func TestResolveRequestRequestOverridesConfigAndExpandsAuthPaths(t *testing.T) {
 	}
 }
 
+func TestResolveRequestInheritsTopLevelMTLSFiles(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	runtime := RuntimeConfig{
+		RootDir:  dir,
+		FileVars: map[string]string{},
+		CLIVars:  map[string]string{},
+		Config: Config{
+			Vars:     map[string]string{},
+			CertFile: "config-client.pem",
+			KeyFile:  "config-client.key",
+		},
+	}
+
+	resolved, err := resolveRequest(RequestSpec{
+		Name:    "test",
+		Method:  http.MethodGet,
+		URL:     "https://example.com",
+		Headers: http.Header{},
+		Auth:    AuthConfig{Scheme: "mtls"},
+	}, runtime, resolver{
+		RequestVars: map[string]string{},
+		FileVars:    runtime.FileVars,
+		ConfigVars:  runtime.Config.Vars,
+		CLIVars:     runtime.CLIVars,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.Auth.CertFile != filepath.Join(dir, "config-client.pem") || resolved.Auth.KeyFile != filepath.Join(dir, "config-client.key") {
+		t.Fatalf("expected top-level client cert defaults to flow into auth, got cert=%q key=%q", resolved.Auth.CertFile, resolved.Auth.KeyFile)
+	}
+}
+
+func TestResolveRequestUsesRequestSelfSignedCertOverride(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	runtime := RuntimeConfig{
+		RootDir:            dir,
+		FileVars:           map[string]string{},
+		CLIVars:            map[string]string{},
+		SelfSignedCertFile: "cli-self.pem",
+		Config: Config{
+			Vars:               map[string]string{},
+			SelfSignedCertFile: "config-self.pem",
+		},
+	}
+
+	resolved, err := resolveRequest(RequestSpec{
+		Name:               "test",
+		Method:             http.MethodGet,
+		URL:                "https://example.com",
+		Headers:            http.Header{},
+		SelfSignedCertFile: "request-self.pem",
+	}, runtime, resolver{
+		RequestVars: map[string]string{},
+		FileVars:    runtime.FileVars,
+		ConfigVars:  runtime.Config.Vars,
+		CLIVars:     runtime.CLIVars,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.SelfSignedCertFile != filepath.Join(dir, "request-self.pem") {
+		t.Fatalf("expected request self-signed cert to win, got %q", resolved.SelfSignedCertFile)
+	}
+}
+
+func TestResolveRequestUsesCLISelfSignedCertOverConfig(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	runtime := RuntimeConfig{
+		RootDir:            dir,
+		FileVars:           map[string]string{},
+		CLIVars:            map[string]string{},
+		SelfSignedCertFile: "cli-self.pem",
+		Config: Config{
+			Vars:               map[string]string{},
+			SelfSignedCertFile: "config-self.pem",
+		},
+	}
+
+	resolved, err := resolveRequest(RequestSpec{
+		Name:    "test",
+		Method:  http.MethodGet,
+		URL:     "https://example.com",
+		Headers: http.Header{},
+	}, runtime, resolver{
+		RequestVars: map[string]string{},
+		FileVars:    runtime.FileVars,
+		VarsFile:    runtime.VarsFileVars,
+		ConfigVars:  runtime.Config.Vars,
+		CLIVars:     runtime.CLIVars,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.SelfSignedCertFile != filepath.Join(dir, "cli-self.pem") {
+		t.Fatalf("expected CLI self-signed cert to win over config, got %q", resolved.SelfSignedCertFile)
+	}
+}
+
+func TestChooseResolvedValueFallsBackAfterResolutionError(t *testing.T) {
+	t.Parallel()
+
+	got := chooseResolvedValue("{{missing}}", "http://config-proxy", resolver{})
+	if got != "http://config-proxy" {
+		t.Fatalf("expected fallback value, got %q", got)
+	}
+}
+
+func TestChooseResolvedPathFallsBackAfterResolutionError(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	got := chooseResolvedPath(dir, "{{missing}}", "certs/server.pem", resolver{})
+	if got != filepath.Join(dir, "certs/server.pem") {
+		t.Fatalf("expected rooted fallback path, got %q", got)
+	}
+}
+
+func TestResolveRequestRootsRelativeCLIPaths(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	runtime := RuntimeConfig{
+		RootDir:    dir,
+		FileVars:   map[string]string{},
+		CLIVars:    map[string]string{},
+		BodyFile:   "payloads/request.json",
+		OutputFile: "output/response.json",
+		Config:     Config{Vars: map[string]string{}},
+	}
+
+	resolved, err := resolveRequest(RequestSpec{
+		Name:    "test",
+		Method:  http.MethodPost,
+		URL:     "https://example.com",
+		Headers: http.Header{},
+	}, runtime, resolver{
+		RequestVars: map[string]string{},
+		FileVars:    runtime.FileVars,
+		ConfigVars:  runtime.Config.Vars,
+		CLIVars:     runtime.CLIVars,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.BodyFile != filepath.Join(dir, "payloads/request.json") {
+		t.Fatalf("expected rooted CLI body file, got %q", resolved.BodyFile)
+	}
+	if resolved.OutputFile != filepath.Join(dir, "output/response.json") {
+		t.Fatalf("expected rooted CLI output file, got %q", resolved.OutputFile)
+	}
+}
+
+func TestResolveRequestRootsRelativeRequestOutputPath(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	runtime := RuntimeConfig{
+		RootDir:  dir,
+		FileVars: map[string]string{},
+		CLIVars:  map[string]string{},
+		Config:   Config{Vars: map[string]string{}},
+	}
+
+	resolved, err := resolveRequest(RequestSpec{
+		Name:       "test",
+		Method:     http.MethodGet,
+		URL:        "https://example.com",
+		Headers:    http.Header{},
+		OutputFile: "responses/request.json",
+	}, runtime, resolver{
+		RequestVars: map[string]string{},
+		FileVars:    runtime.FileVars,
+		ConfigVars:  runtime.Config.Vars,
+		CLIVars:     runtime.CLIVars,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.OutputFile != filepath.Join(dir, "responses/request.json") {
+		t.Fatalf("expected rooted request output file, got %q", resolved.OutputFile)
+	}
+}
+
 func TestExecuteRequestRejectsUnknownAuthScheme(t *testing.T) {
 	t.Parallel()
 
@@ -225,8 +417,6 @@ func TestExecuteRequestRejectsHTTP2OnHTTPURL(t *testing.T) {
 }
 
 func TestGetAzureTokenUsesCustomTokenURLScopeAndTLSConfig(t *testing.T) {
-	t.Parallel()
-
 	var gotGrantType, gotScope string
 	tokenServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err := r.ParseForm(); err != nil {
@@ -245,6 +435,7 @@ func TestGetAzureTokenUsesCustomTokenURLScopeAndTLSConfig(t *testing.T) {
 	if err := os.WriteFile(certFile, pemBytes, 0o644); err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv("AZURE_ACCESS_TOKEN", "ambient-token")
 
 	token, err := getAzureToken(context.Background(), resolvedRequest{
 		Timeout:            5 * time.Second,
@@ -266,6 +457,23 @@ func TestGetAzureTokenUsesCustomTokenURLScopeAndTLSConfig(t *testing.T) {
 	}
 	if gotGrantType != "client_credentials" || gotScope != "https://vault.azure.net/.default" {
 		t.Fatalf("unexpected token request form grant_type=%q scope=%q", gotGrantType, gotScope)
+	}
+}
+
+func TestGetAzureTokenUsesExplicitTokenBeforeRequestingNewOne(t *testing.T) {
+	t.Parallel()
+
+	token, err := getAzureToken(context.Background(), resolvedRequest{
+		Auth: AuthConfig{
+			Scheme: "azuread",
+			Token:  "explicit-token",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if token != "explicit-token" {
+		t.Fatalf("unexpected token %q", token)
 	}
 }
 

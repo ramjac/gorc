@@ -89,6 +89,20 @@ func TestAzureTokenFlow(t *testing.T) {
 	}
 }
 
+func TestAzureTokenRejectsUnexpectedScope(t *testing.T) {
+	server := newTestServer(t)
+	handler := server.routes()
+
+	body := strings.NewReader("grant_type=client_credentials&client_id=" + azureClientID + "&client_secret=" + azureClientSecret + "&scope=api://wrong/.default")
+	req := httptest.NewRequest(http.MethodPost, "/oauth2/v2.0/token", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp := httptest.NewRecorder()
+	handler.ServeHTTP(resp, req)
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", resp.Code, resp.Body.String())
+	}
+}
+
 func TestNTLMAuthTodos(t *testing.T) {
 	server := newTestServer(t)
 	handler := server.routes()

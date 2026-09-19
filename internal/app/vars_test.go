@@ -19,6 +19,22 @@ func TestResolveStringPrecedence(t *testing.T) {
 	}
 }
 
+func TestResolveStringUsesVarsFileBetweenFileAndConfig(t *testing.T) {
+	t.Parallel()
+
+	got, err := resolveString("{{shared}}", resolver{
+		FileVars:   map[string]string{},
+		VarsFile:   map[string]string{"shared": "vars-file"},
+		ConfigVars: map[string]string{"shared": "config"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "vars-file" {
+		t.Fatalf("expected vars-file precedence, got %q", got)
+	}
+}
+
 func TestResolveStringErrorsOnUnresolvedVariable(t *testing.T) {
 	t.Parallel()
 

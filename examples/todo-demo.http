@@ -13,7 +13,6 @@
 @demo_ca_cert = {{$config demo_ca_cert}}
 @mtls_client_cert = {{$config mtls_client_cert}}
 @mtls_client_key = {{$config mtls_client_key}}
-@ntlm_secret = {{$config ntlm_secret}}
 
 ###
 # @name self-signed health
@@ -47,7 +46,6 @@ Accept: application/json
 GET {{self_signed_base}}/auth/digest/todos
 Accept: application/json
 
-###
 ###
 # @name azuread todos
 # @auth azuread tenant_id={{azure_tenant}} client_id={{azure_client_id}} client_secret={{azure_client_secret}} scope={{azure_scope}} token_url={{self_signed_base}}/oauth2/v2.0/token
