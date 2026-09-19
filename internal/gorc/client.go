@@ -136,10 +136,9 @@ func executeRequest(ctx context.Context, plan executionPlan) (*http.Response, []
 			return nil, nil, err
 		}
 		request.Header.Set("Authorization", "Bearer "+token)
-	case "", "mtls":
-		if resolved.Auth.Scheme == "mtls" {
-			logger.Debugf("using mTLS client certificate authentication")
-		}
+	case "":
+	case "mtls":
+		logger.Debugf("using mTLS client certificate authentication")
 	default:
 		return nil, nil, fmt.Errorf("unsupported auth scheme %q", resolved.Auth.Scheme)
 	}
