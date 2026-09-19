@@ -52,8 +52,11 @@ If no file is specified and the current directory contains exactly one `.http` f
 - `--proxy`, `-p` use a proxy
 - `--http-version`, `-H` select the HTTP version
 - `--log-level`, `-l` control diagnostic logging on stderr
+- `--no-color`, `-C` disable colored output
 - `--self-signed-cert`, `-s` trust a specific self-signed server certificate
 - `--insecure`, `-k` skip TLS verification
+
+By default, `gorc` uses color for HTTP responses and diagnostic logging. Use `--no-color` or config `no_color: true` to disable it.
 
 By default, `gorc` stays quiet and only prints HTTP request results to stdout. Diagnostic logging is opt-in and is written to stderr.
 
@@ -181,6 +184,7 @@ Example:
 {
   "http_version": "auto",
   "log_level": "debug",
+  "no_color": false,
   "proxy": "http://127.0.0.1:8080",
   "self_signed_cert_file": "./certs/server.pem",
   "timeout": "30s",
@@ -200,6 +204,7 @@ Example:
 - `debug` logging includes request selection, auth setup, transport choices, proxy usage, TLS material loading, and response-file writes.
 - `info` logging includes request start and completion status lines.
 - `error` logging includes transport and request failures.
+- Response headings, status lines, headers, and log labels are colorized by default.
 - HTTP/2 selection is strict in this CLI and currently requires an `https://` endpoint.
 - A configured or directed self-signed certificate is added to the client trust store without disabling all TLS verification.
 - HTTP/3 requires HTTPS and does not currently support proxies in this CLI.

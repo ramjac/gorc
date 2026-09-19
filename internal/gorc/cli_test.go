@@ -220,6 +220,7 @@ func TestParseRunOptionsSupportsMixedShortFlags(t *testing.T) {
 		"-p", "http://proxy.local:8080",
 		"-H", "2",
 		"-l", "debug",
+		"-C",
 		"-s", "server.pem",
 		"-k",
 		"-n", "login",
@@ -231,7 +232,7 @@ func TestParseRunOptionsSupportsMixedShortFlags(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !options.All || !options.Insecure {
+	if !options.All || !options.Insecure || !options.NoColor {
 		t.Fatalf("expected bool short flags to be set: %#v", options)
 	}
 	if options.ConfigPath != "config.json" || options.OutputFile != "response.out" || options.BodyFile != "body.json" {
@@ -248,6 +249,18 @@ func TestParseRunOptionsSupportsMixedShortFlags(t *testing.T) {
 	}
 	if options.VarsFile != "vars.json" || options.Vars["token"] != "abc" {
 		t.Fatalf("unexpected vars config: file=%q vars=%#v", options.VarsFile, options.Vars)
+	}
+}
+
+func TestParseRunOptionsSupportsNoColorFlag(t *testing.T) {
+	t.Parallel()
+
+	options, err := parseRunOptions([]string{"--no-color", "requests.http"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !options.NoColor {
+		t.Fatal("expected --no-color to disable color")
 	}
 }
 

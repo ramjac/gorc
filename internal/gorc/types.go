@@ -50,6 +50,7 @@ type Config struct {
 	Proxy              string            `json:"proxy"`
 	HTTPVersion        string            `json:"http_version"`
 	LogLevel           string            `json:"log_level"`
+	NoColor            bool              `json:"no_color"`
 	Insecure           bool              `json:"insecure"`
 	CACertFile         string            `json:"ca_cert_file"`
 	SelfSignedCertFile string            `json:"self_signed_cert_file"`
@@ -73,6 +74,7 @@ type RunOptions struct {
 	Proxy              string
 	HTTPVersion        string
 	LogLevel           string
+	NoColor            bool
 	SelfSignedCertFile string
 	Insecure           bool
 	Timeout            time.Duration
@@ -93,6 +95,7 @@ type RuntimeConfig struct {
 	Proxy              string
 	HTTPVersion        string
 	LogLevel           string
+	ColorEnabled       bool
 	SelfSignedCertFile string
 	Insecure           bool
 	Auth               AuthConfig

@@ -51,6 +51,7 @@ func parseRunOptions(args []string) (RunOptions, error) {
 		proxy       string
 		httpVer     string
 		logLevel    string
+		noColor     bool
 		selfSigned  string
 		insecure    bool
 		all         bool
@@ -76,6 +77,8 @@ func parseRunOptions(args []string) (RunOptions, error) {
 	fs.StringVar(&httpVer, "H", "", "HTTP version: auto, 1, 2, or 3")
 	fs.StringVar(&logLevel, "log-level", "", "log level: none, error, info, debug, or trace")
 	fs.StringVar(&logLevel, "l", "", "log level: none, error, info, debug, or trace")
+	fs.BoolVar(&noColor, "no-color", false, "disable colored output")
+	fs.BoolVar(&noColor, "C", false, "disable colored output")
 	fs.StringVar(&selfSigned, "self-signed-cert", "", "PEM file for a trusted self-signed server certificate")
 	fs.StringVar(&selfSigned, "s", "", "PEM file for a trusted self-signed server certificate")
 	fs.BoolVar(&insecure, "insecure", false, "skip TLS verification")
@@ -122,6 +125,7 @@ func parseRunOptions(args []string) (RunOptions, error) {
 		Proxy:              proxy,
 		HTTPVersion:        httpVer,
 		LogLevel:           logLevel,
+		NoColor:            noColor,
 		SelfSignedCertFile: selfSigned,
 		Insecure:           insecure,
 	}, nil
@@ -180,7 +184,9 @@ func run(options RunOptions, stdout, stderr io.Writer) error {
 	if options.LogLevel != "" {
 		logLevel = options.LogLevel
 	}
-	logger, err := NewLogger(logLevel, stderr)
+	noColor := cfg.NoColor || options.NoColor
+	colorEnabled := shouldEnableColor(noColor)
+	logger, err := NewLogger(logLevel, stderr, colorEnabled)
 	if err != nil {
 		return err
 	}
@@ -203,6 +209,7 @@ func run(options RunOptions, stdout, stderr io.Writer) error {
 		Proxy:              options.Proxy,
 		HTTPVersion:        options.HTTPVersion,
 		LogLevel:           logLevel,
+		ColorEnabled:       colorEnabled,
 		SelfSignedCertFile: options.SelfSignedCertFile,
 		Insecure:           options.Insecure,
 		Auth:               options.SelectedAuth,

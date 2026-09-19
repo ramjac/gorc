@@ -20,6 +20,7 @@ const (
 type Logger struct {
 	level LogLevel
 	out   io.Writer
+	colors *Colorizer
 	mu    sync.Mutex
 }
 
@@ -40,12 +41,12 @@ func parseLogLevel(value string) (LogLevel, error) {
 	}
 }
 
-func NewLogger(level string, out io.Writer) (*Logger, error) {
+func NewLogger(level string, out io.Writer, colorEnabled bool) (*Logger, error) {
 	parsed, err := parseLogLevel(level)
 	if err != nil {
 		return nil, err
 	}
-	return &Logger{level: parsed, out: out}, nil
+	return &Logger{level: parsed, out: out, colors: NewColorizer(colorEnabled)}, nil
 }
 
 func (l *Logger) Enabled(level LogLevel) bool {
@@ -63,7 +64,11 @@ func (l *Logger) logf(level LogLevel, format string, args ...any) {
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	_, _ = fmt.Fprintf(l.out, "[%s] %s\n", levelName(level), fmt.Sprintf(format, args...))
+	label := levelName(level)
+	if l.colors != nil {
+		label = l.colors.LogLabel(level)
+	}
+	_, _ = fmt.Fprintf(l.out, "[%s] %s\n", label, fmt.Sprintf(format, args...))
 }
 
 func levelName(level LogLevel) string {

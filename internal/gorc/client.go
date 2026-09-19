@@ -53,7 +53,7 @@ func executeRequests(ctx context.Context, plans []executionPlan, stdout io.Write
 				return err
 			}
 		}
-		if err := writeResponse(stdout, plan.Request, resp, body); err != nil {
+		if err := writeResponse(stdout, plan.Request, resp, body, plan.Runtime.ColorEnabled); err != nil {
 			return err
 		}
 	}
@@ -701,15 +701,16 @@ func withTrace(req *http.Request, logger *Logger) *http.Request {
 	return req.WithContext(httptrace.WithClientTrace(req.Context(), trace))
 }
 
-func writeResponse(w io.Writer, req RequestSpec, resp *http.Response, body []byte) error {
-	if _, err := fmt.Fprintf(w, "### %s\n", req.Name); err != nil {
+func writeResponse(w io.Writer, req RequestSpec, resp *http.Response, body []byte, colorEnabled bool) error {
+	colorizer := NewColorizer(colorEnabled)
+	if _, err := fmt.Fprintf(w, "%s\n", colorizer.Title("### %s", req.Name)); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintf(w, "%s\n", resp.Status); err != nil {
+	if _, err := fmt.Fprintf(w, "%s\n", formatResponseStatus(colorizer, resp)); err != nil {
 		return err
 	}
 	for key, values := range resp.Header {
-		if _, err := fmt.Fprintf(w, "%s: %s\n", key, strings.Join(values, ", ")); err != nil {
+		if _, err := fmt.Fprintf(w, "%s\n", formatHeaderLine(colorizer, key, values)); err != nil {
 			return err
 		}
 	}
@@ -734,6 +735,6 @@ func writeResponse(w io.Writer, req RequestSpec, resp *http.Response, body []byt
 		_, err := fmt.Fprintln(w, string(body))
 		return err
 	}
-	_, err := fmt.Fprintf(w, "%d bytes written\n", len(body))
+	_, err := fmt.Fprintf(w, "%s\n", colorizer.Meta("%d bytes written", len(body)))
 	return err
 }
