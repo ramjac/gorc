@@ -280,6 +280,7 @@ func run(ctx context.Context, options RunOptions, stdout, stderr io.Writer) erro
 		Auth:               options.SelectedAuth,
 		Logger:             logger,
 		LogWriter:          stderr,
+		outputFiles:        newOutputFileState(),
 	}
 
 	if options.Interactive {
@@ -331,6 +332,9 @@ func selectRequests(requests []RequestSpec, options RunOptions) ([]RequestSpec, 
 }
 
 func runInteractive(ctx context.Context, requests []RequestSpec, runtime RuntimeConfig, stdout, stderr io.Writer, input io.Reader) error {
+	if runtime.outputFiles == nil {
+		runtime.outputFiles = newOutputFileState()
+	}
 	reader := bufio.NewReader(input)
 	for {
 		if err := ctx.Err(); err != nil {

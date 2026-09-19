@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -35,6 +36,40 @@ func TestRunDefaultLoggingIsSilent(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "ok") {
 		t.Fatalf("expected response body in stdout, got %q", stdout.String())
+	}
+}
+
+func TestRunOverwritesOutputFileOnEachInvocation(t *testing.T) {
+	handler := http.NewServeMux()
+	handler.HandleFunc("/first", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("first"))
+	})
+	handler.HandleFunc("/second", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("second"))
+	})
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	dir := t.TempDir()
+	requestFile := filepath.Join(dir, "requests.http")
+	requests := "GET " + server.URL + "/first\n###\nGET " + server.URL + "/second\n"
+	if err := os.WriteFile(requestFile, []byte(requests), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	outputFile := filepath.Join(dir, "responses.txt")
+	options := RunOptions{FilePath: requestFile, All: true, OutputFile: outputFile}
+
+	for range 2 {
+		if err := run(context.Background(), options, io.Discard, io.Discard); err != nil {
+			t.Fatal(err)
+		}
+		data, err := os.ReadFile(outputFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, want := string(data), "firstsecond"; got != want {
+			t.Fatalf("expected one invocation's response bodies, got %q want %q", got, want)
+		}
 	}
 }
 

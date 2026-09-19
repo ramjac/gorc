@@ -198,6 +198,7 @@ func parseDirective(spec *RequestSpec, line string) {
 		spec.SelfSignedCertFile = value
 	case "insecure":
 		spec.Insecure = strings.EqualFold(value, "true") || value == "1" || strings.EqualFold(value, "yes")
+		spec.InsecureSet = true
 	case "auth":
 		spec.Auth = parseAuthDirective(value)
 	}

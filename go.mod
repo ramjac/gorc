@@ -12,6 +12,7 @@ require (
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/viper v1.21.0
 	golang.org/x/net v0.42.0
+	software.sslmate.com/src/go-pkcs12 v0.7.3
 )
 
 require (

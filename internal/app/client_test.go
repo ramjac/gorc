@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/pem"
+	"io"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
@@ -12,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"software.sslmate.com/src/go-pkcs12"
 )
 
 func TestExecuteRequestsUsesCookiesAndBasicAuth(t *testing.T) {
@@ -103,6 +106,50 @@ func TestExecuteRequestsUsesCookiesAndBasicAuth(t *testing.T) {
 	}
 }
 
+func TestExecuteRequestsAppendsBodiesToSharedOutputFile(t *testing.T) {
+	handler := http.NewServeMux()
+	handler.HandleFunc("/first", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("first"))
+	})
+	handler.HandleFunc("/second", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("second"))
+	})
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	outputFile := filepath.Join(t.TempDir(), "responses.txt")
+	if err := os.WriteFile(outputFile, []byte("old-content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runtime := RuntimeConfig{
+		OutputFile: outputFile,
+		Config:     Config{Vars: map[string]string{}},
+		FileVars:   map[string]string{},
+		CLIVars:    map[string]string{},
+	}
+	plans := []executionPlan{
+		{
+			Request: RequestSpec{Name: "first", Method: http.MethodGet, URL: server.URL + "/first", Headers: http.Header{}},
+			Runtime: runtime,
+		},
+		{
+			Request: RequestSpec{Name: "second", Method: http.MethodGet, URL: server.URL + "/second", Headers: http.Header{}},
+			Runtime: runtime,
+		},
+	}
+
+	if err := executeRequests(context.Background(), plans, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(outputFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(data), "firstsecond"; got != want {
+		t.Fatalf("expected response bodies to be appended in order, got %q want %q", got, want)
+	}
+}
+
 func TestMergeAuthRefinesConfiguredScheme(t *testing.T) {
 	t.Parallel()
 
@@ -176,7 +223,7 @@ func TestResolveRequestRequestOverridesConfigAndExpandsAuthPaths(t *testing.T) {
 	if resolved.CACertFile != filepath.Join(dir, "ca.pem") {
 		t.Fatalf("unexpected CA path: %q", resolved.CACertFile)
 	}
-	if resolved.SelfSignedCertFile != filepath.Join(dir, "request-self.pem") {
+	if resolved.SelfSignedCertFile != filepath.Join(dir, "cli.pem") {
 		t.Fatalf("unexpected self-signed path: %q", resolved.SelfSignedCertFile)
 	}
 	if resolved.Auth.CertFile != filepath.Join(dir, "client.pem") || resolved.Auth.KeyFile != filepath.Join(dir, "client.key") {
@@ -219,7 +266,86 @@ func TestResolveRequestInheritsTopLevelMTLSFiles(t *testing.T) {
 	}
 }
 
-func TestResolveRequestUsesRequestSelfSignedCertOverride(t *testing.T) {
+func TestResolveRequestRejectsMTLSWithoutEffectiveCertificatePair(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		auth      AuthConfig
+		wantError string
+	}{
+		{
+			name:      "neither PEM file",
+			auth:      AuthConfig{Scheme: "mtls"},
+			wantError: "mtls authentication requires a certificate file",
+		},
+		{
+			name:      "PEM certificate only",
+			auth:      AuthConfig{Scheme: "mtls", CertFile: "client.pem"},
+			wantError: "mtls authentication with a PEM certificate requires a key file",
+		},
+		{
+			name:      "PEM key only",
+			auth:      AuthConfig{Scheme: "mtls", KeyFile: "client.key"},
+			wantError: "mtls authentication requires a certificate file",
+		},
+		{
+			name:      "PKCS12 without password",
+			auth:      AuthConfig{Scheme: "mtls", CertFile: "client.pfx"},
+			wantError: "mtls authentication with a PKCS#12 certificate requires a password",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := resolveRequest(RequestSpec{
+				Name:    "test",
+				Method:  http.MethodGet,
+				URL:     "https://example.com",
+				Headers: http.Header{},
+				Auth:    test.auth,
+			}, RuntimeConfig{
+				RootDir:  t.TempDir(),
+				FileVars: map[string]string{},
+				CLIVars:  map[string]string{},
+				Config:   Config{Vars: map[string]string{}},
+			}, resolver{})
+			if err == nil || !strings.Contains(err.Error(), test.wantError) {
+				t.Fatalf("expected %q, got %v", test.wantError, err)
+			}
+		})
+	}
+}
+
+func TestResolveRequestAcceptsPasswordProtectedPKCS12Certificate(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	resolved, err := resolveRequest(RequestSpec{
+		Name:    "test",
+		Method:  http.MethodGet,
+		URL:     "https://example.com",
+		Headers: http.Header{},
+		Auth: AuthConfig{
+			Scheme:   "mtls",
+			CertFile: "client.P12",
+			Password: "secret",
+		},
+	}, RuntimeConfig{
+		RootDir:  dir,
+		FileVars: map[string]string{},
+		CLIVars:  map[string]string{},
+		Config:   Config{Vars: map[string]string{}},
+	}, resolver{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.Auth.CertFile != filepath.Join(dir, "client.P12") || resolved.Auth.KeyFile != "" {
+		t.Fatalf("unexpected resolved PKCS#12 credentials: %#v", resolved.Auth)
+	}
+}
+
+func TestResolveRequestUsesCLISelfSignedCertOverRequest(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -249,8 +375,8 @@ func TestResolveRequestUsesRequestSelfSignedCertOverride(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resolved.SelfSignedCertFile != filepath.Join(dir, "request-self.pem") {
-		t.Fatalf("expected request self-signed cert to win, got %q", resolved.SelfSignedCertFile)
+	if resolved.SelfSignedCertFile != filepath.Join(dir, "cli-self.pem") {
+		t.Fatalf("expected CLI self-signed cert to win over request, got %q", resolved.SelfSignedCertFile)
 	}
 }
 
@@ -289,22 +415,82 @@ func TestResolveRequestUsesCLISelfSignedCertOverConfig(t *testing.T) {
 	}
 }
 
-func TestChooseResolvedValueFallsBackAfterResolutionError(t *testing.T) {
+func TestChooseResolvedValueReturnsResolutionError(t *testing.T) {
 	t.Parallel()
 
-	got := chooseResolvedValue("{{missing}}", "http://config-proxy", resolver{})
-	if got != "http://config-proxy" {
-		t.Fatalf("expected fallback value, got %q", got)
+	got, err := chooseResolvedValue("{{missing}}", "http://config-proxy", resolver{})
+	if err == nil || !strings.Contains(err.Error(), `unresolved variable "missing"`) {
+		t.Fatalf("expected unresolved variable error, got value=%q err=%v", got, err)
 	}
 }
 
-func TestChooseResolvedPathFallsBackAfterResolutionError(t *testing.T) {
+func TestChooseResolvedPathReturnsResolutionError(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	got := chooseResolvedPath(dir, "{{missing}}", "certs/server.pem", resolver{})
-	if got != filepath.Join(dir, "certs/server.pem") {
-		t.Fatalf("expected rooted fallback path, got %q", got)
+	got, err := chooseResolvedPath(dir, "{{missing}}", "certs/server.pem", resolver{})
+	if err == nil || !strings.Contains(err.Error(), `unresolved variable "missing"`) {
+		t.Fatalf("expected unresolved variable error, got value=%q err=%v", got, err)
+	}
+}
+
+func TestResolveRequestPropagatesOptionalFieldResolutionErrors(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		spec    RequestSpec
+		runtime RuntimeConfig
+	}{
+		{
+			name: "body file",
+			spec: RequestSpec{Name: "test", Method: http.MethodGet, URL: "https://example.com", Headers: http.Header{}},
+			runtime: RuntimeConfig{
+				BodyFile: "{{missing}}",
+			},
+		},
+		{
+			name: "output file",
+			spec: RequestSpec{Name: "test", Method: http.MethodGet, URL: "https://example.com", Headers: http.Header{}, OutputFile: "{{missing}}"},
+		},
+		{
+			name: "proxy",
+			spec: RequestSpec{Name: "test", Method: http.MethodGet, URL: "https://example.com", Headers: http.Header{}, Proxy: "{{missing}}"},
+		},
+		{
+			name: "http version",
+			spec: RequestSpec{Name: "test", Method: http.MethodGet, URL: "https://example.com", Headers: http.Header{}, HTTPVersion: "{{missing}}"},
+		},
+		{
+			name: "ca cert file",
+			spec: RequestSpec{Name: "test", Method: http.MethodGet, URL: "https://example.com", Headers: http.Header{}, CACertFile: "{{missing}}"},
+		},
+		{
+			name: "self-signed cert file",
+			spec: RequestSpec{Name: "test", Method: http.MethodGet, URL: "https://example.com", Headers: http.Header{}},
+			runtime: RuntimeConfig{
+				SelfSignedCertFile: "{{missing}}",
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			test.runtime.RootDir = t.TempDir()
+			test.runtime.FileVars = map[string]string{}
+			test.runtime.CLIVars = map[string]string{}
+			test.runtime.Config.Vars = map[string]string{}
+			_, err := resolveRequest(test.spec, test.runtime, resolver{
+				RequestVars: map[string]string{},
+				FileVars:    test.runtime.FileVars,
+				VarsFile:    test.runtime.VarsFileVars,
+				ConfigVars:  test.runtime.Config.Vars,
+				CLIVars:     test.runtime.CLIVars,
+			})
+			if err == nil || !strings.Contains(err.Error(), `unresolved variable "missing"`) {
+				t.Fatalf("expected unresolved variable error, got %v", err)
+			}
+		})
 	}
 }
 
@@ -374,13 +560,58 @@ func TestResolveRequestRootsRelativeRequestOutputPath(t *testing.T) {
 	}
 }
 
+func TestResolveRequestExplicitInsecureFalseOverridesDefaults(t *testing.T) {
+	t.Parallel()
+
+	resolved, err := resolveRequest(RequestSpec{
+		Name:        "test",
+		Method:      http.MethodGet,
+		URL:         "https://example.com",
+		Headers:     http.Header{},
+		Insecure:    false,
+		InsecureSet: true,
+	}, RuntimeConfig{
+		Config:   Config{Vars: map[string]string{}, Insecure: true},
+		Insecure: true,
+		FileVars: map[string]string{},
+		CLIVars:  map[string]string{},
+	}, resolver{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.Insecure {
+		t.Fatal("expected explicit request insecure=false to override insecure defaults")
+	}
+}
+
+func TestResolveRequestInheritsInsecureDefaultsWithoutDirective(t *testing.T) {
+	t.Parallel()
+
+	resolved, err := resolveRequest(RequestSpec{
+		Name:    "test",
+		Method:  http.MethodGet,
+		URL:     "https://example.com",
+		Headers: http.Header{},
+	}, RuntimeConfig{
+		Config:   Config{Vars: map[string]string{}, Insecure: true},
+		FileVars: map[string]string{},
+		CLIVars:  map[string]string{},
+	}, resolver{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !resolved.Insecure {
+		t.Fatal("expected insecure config default to be inherited")
+	}
+}
+
 func TestExecuteRequestRejectsUnknownAuthScheme(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	defer server.Close()
 
-	_, _, err := executeRequest(context.Background(), executionPlan{
+	_, _, _, err := executeRequest(context.Background(), executionPlan{
 		Request: RequestSpec{
 			Name:    "bad auth",
 			Method:  http.MethodGet,
@@ -401,7 +632,7 @@ func TestExecuteRequestRejectsHTTP2OnHTTPURL(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	defer server.Close()
 
-	_, _, err := executeRequest(context.Background(), executionPlan{
+	_, _, _, err := executeRequest(context.Background(), executionPlan{
 		Request: RequestSpec{
 			Name:        "http2 over http",
 			Method:      http.MethodGet,
@@ -413,6 +644,21 @@ func TestExecuteRequestRejectsHTTP2OnHTTPURL(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "HTTP/2 requires an https URL") {
 		t.Fatalf("expected strict HTTP/2 error, got %v", err)
+	}
+}
+
+func TestBuildTransportRejectsHTTP2Proxy(t *testing.T) {
+	t.Parallel()
+
+	_, _, err := buildTransport(resolvedRequest{
+		RequestSpec: RequestSpec{
+			URL:         "https://example.com",
+			HTTPVersion: "2",
+			Proxy:       "http://proxy.local:8080",
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "HTTP/2 proxy support is not available") {
+		t.Fatalf("expected strict HTTP/2 proxy error, got %v", err)
 	}
 }
 
@@ -505,5 +751,44 @@ func TestBuildTLSConfigAcceptsSelfSignedCertFile(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("unexpected status %d", resp.StatusCode)
+	}
+}
+
+func TestBuildTLSConfigLoadsPasswordProtectedPKCS12Certificate(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer server.Close()
+
+	serverCertificate := server.Certificate()
+	pfxData, err := pkcs12.Modern2023.Encode(
+		server.TLS.Certificates[0].PrivateKey,
+		serverCertificate,
+		nil,
+		"test-password",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pfxFile := filepath.Join(t.TempDir(), "client.pfx")
+	if err := os.WriteFile(pfxFile, pfxData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	tlsConfig, err := buildTLSConfig(resolvedRequest{
+		Auth: AuthConfig{
+			Scheme:   "mtls",
+			CertFile: pfxFile,
+			Password: "test-password",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tlsConfig.Certificates) != 1 || tlsConfig.Certificates[0].Leaf == nil {
+		t.Fatalf("expected decoded PKCS#12 client certificate, got %#v", tlsConfig.Certificates)
+	}
+	if !tlsConfig.Certificates[0].Leaf.Equal(serverCertificate) {
+		t.Fatal("decoded PKCS#12 leaf certificate does not match")
 	}
 }

@@ -24,6 +24,7 @@ type RequestSpec struct {
 	CACertFile         string
 	SelfSignedCertFile string
 	Insecure           bool
+	InsecureSet        bool
 	Auth               AuthConfig
 	FileVars           map[string]string
 	SourcePath         string
@@ -103,6 +104,7 @@ type RuntimeConfig struct {
 	Auth               AuthConfig
 	Logger             *Logger
 	LogWriter          io.Writer
+	outputFiles        *outputFileState
 }
 
 type executionPlan struct {

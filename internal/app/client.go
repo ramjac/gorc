@@ -23,12 +23,15 @@ import (
 	"github.com/icholy/digest"
 	"github.com/quic-go/quic-go/http3"
 	"golang.org/x/net/http2"
+	"software.sslmate.com/src/go-pkcs12"
 )
 
 func executeRequests(ctx context.Context, plans []executionPlan, stdout io.Writer) error {
 	var jar http.CookieJar
+	var outputFiles *outputFileState
 	if len(plans) > 0 {
 		jar = plans[0].Runtime.CookieJar
+		outputFiles = plans[0].Runtime.outputFiles
 	}
 	if jar == nil {
 		var err error
@@ -37,13 +40,17 @@ func executeRequests(ctx context.Context, plans []executionPlan, stdout io.Write
 			return err
 		}
 	}
+	if outputFiles == nil {
+		outputFiles = newOutputFileState()
+	}
 
 	for i := range plans {
 		plans[i].Runtime.CookieJar = jar
+		plans[i].Runtime.outputFiles = outputFiles
 	}
 
 	for i, plan := range plans {
-		resp, body, err := executeRequest(ctx, plan)
+		resp, body, outputFile, err := executeRequest(ctx, plan)
 		if err != nil {
 			plan.Runtime.Logger.Errorf("request %q failed: %v", plan.Request.Name, err)
 			return err
@@ -53,7 +60,7 @@ func executeRequests(ctx context.Context, plans []executionPlan, stdout io.Write
 				return err
 			}
 		}
-		if err := writeResponse(stdout, plan.Request, resp, body, plan.Runtime.Colorizer); err != nil {
+		if err := writeResponse(stdout, plan.Request, resp, body, outputFile, plan.Runtime.Colorizer); err != nil {
 			return err
 		}
 	}
@@ -61,7 +68,7 @@ func executeRequests(ctx context.Context, plans []executionPlan, stdout io.Write
 	return nil
 }
 
-func executeRequest(ctx context.Context, plan executionPlan) (*http.Response, []byte, error) {
+func executeRequest(ctx context.Context, plan executionPlan) (*http.Response, []byte, string, error) {
 	reqSpec := plan.Request
 	runtime := plan.Runtime
 	logger := runtime.Logger
@@ -75,14 +82,14 @@ func executeRequest(ctx context.Context, plan executionPlan) (*http.Response, []
 
 	resolved, err := resolveRequest(reqSpec, runtime, resolver)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, "", err
 	}
 	logger.Infof("executing request %q", resolved.Name)
 	logger.Debugf("resolved request method=%s url=%s http_version=%s", resolved.Method, resolved.URL, resolved.HTTPVersion)
 
 	bodyBytes, err := buildBody(resolved)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, resolved.OutputFile, err
 	}
 	if len(bodyBytes) > 0 {
 		logger.Debugf("prepared request body bytes=%d", len(bodyBytes))
@@ -90,7 +97,7 @@ func executeRequest(ctx context.Context, plan executionPlan) (*http.Response, []
 
 	request, err := http.NewRequestWithContext(ctx, resolved.Method, resolved.URL, newBody(bodyBytes))
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, resolved.OutputFile, err
 	}
 	request.GetBody = func() (io.ReadCloser, error) {
 		return newBody(bodyBytes), nil
@@ -104,7 +111,7 @@ func executeRequest(ctx context.Context, plan executionPlan) (*http.Response, []
 
 	transport, closer, err := buildTransport(resolved)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, resolved.OutputFile, err
 	}
 	if closer != nil {
 		defer closer.Close()
@@ -134,14 +141,14 @@ func executeRequest(ctx context.Context, plan executionPlan) (*http.Response, []
 		logger.Debugf("requesting Azure AD access token")
 		token, err := getAzureToken(ctx, resolved)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, resolved.OutputFile, err
 		}
 		request.Header.Set("Authorization", "Bearer "+token)
 	case "":
 	case "mtls":
 		logger.Debugf("using mTLS client certificate authentication")
 	default:
-		return nil, nil, fmt.Errorf("unsupported auth scheme %q", resolved.Auth.Scheme)
+		return nil, nil, resolved.OutputFile, fmt.Errorf("unsupported auth scheme %q", resolved.Auth.Scheme)
 	}
 
 	client := &http.Client{
@@ -154,25 +161,58 @@ func executeRequest(ctx context.Context, plan executionPlan) (*http.Response, []
 	resp, err := client.Do(request)
 	if err != nil {
 		logger.Errorf("request %q transport error: %v", resolved.Name, err)
-		return nil, nil, err
+		return nil, nil, resolved.OutputFile, err
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, resolved.OutputFile, err
 	}
 	logger.Infof("request %q completed with status=%s duration=%s", resolved.Name, resp.Status, time.Since(started).Round(time.Microsecond))
 	if resolved.OutputFile != "" {
-		if err := os.MkdirAll(filepath.Dir(resolved.OutputFile), 0o755); err != nil {
-			return nil, nil, err
+		outputFiles := runtime.outputFiles
+		if outputFiles == nil {
+			outputFiles = newOutputFileState()
 		}
-		if err := os.WriteFile(resolved.OutputFile, body, 0o644); err != nil {
-			return nil, nil, err
+		if err := outputFiles.write(resolved.OutputFile, body); err != nil {
+			return nil, nil, resolved.OutputFile, err
 		}
 		logger.Debugf("wrote response body to %s", resolved.OutputFile)
 	}
-	return resp, body, nil
+	return resp, body, resolved.OutputFile, nil
+}
+
+type outputFileState struct {
+	initialized map[string]struct{}
+}
+
+func newOutputFileState() *outputFileState {
+	return &outputFileState{initialized: make(map[string]struct{})}
+}
+
+func (s *outputFileState) write(path string, body []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+
+	flags := os.O_CREATE | os.O_WRONLY | os.O_TRUNC
+	if _, ok := s.initialized[path]; ok {
+		flags = os.O_CREATE | os.O_WRONLY | os.O_APPEND
+	}
+	file, err := os.OpenFile(path, flags, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := file.Write(body); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	s.initialized[path] = struct{}{}
+	return nil
 }
 
 type resolvedRequest struct {
@@ -207,12 +247,25 @@ func resolveRequest(spec RequestSpec, runtime RuntimeConfig, vars resolver) (res
 	if resolved.Body, err = resolveString(spec.Body, vars); err != nil {
 		return resolved, err
 	}
-	resolved.BodyFile = chooseResolvedPath(runtime.RootDir, runtime.BodyFile, spec.BodyFile, vars)
-	resolved.OutputFile = chooseResolvedPath(runtime.RootDir, runtime.OutputFile, spec.OutputFile, vars)
-	resolved.Proxy = chooseResolvedValue(spec.Proxy, runtime.Proxy, runtime.Config.Proxy, vars)
-	resolved.HTTPVersion = strings.ToLower(chooseResolvedValue(spec.HTTPVersion, runtime.HTTPVersion, runtime.Config.HTTPVersion, vars))
-	resolved.CACertFile = chooseResolvedPath(runtime.RootDir, spec.CACertFile, runtime.Config.CACertFile, vars)
-	resolved.SelfSignedCertFile = chooseResolvedPath(runtime.RootDir, spec.SelfSignedCertFile, runtime.SelfSignedCertFile, runtime.Config.SelfSignedCertFile, vars)
+	if resolved.BodyFile, err = chooseResolvedPath(runtime.RootDir, runtime.BodyFile, spec.BodyFile, vars); err != nil {
+		return resolved, err
+	}
+	if resolved.OutputFile, err = chooseResolvedPath(runtime.RootDir, runtime.OutputFile, spec.OutputFile, vars); err != nil {
+		return resolved, err
+	}
+	if resolved.Proxy, err = chooseResolvedValue(spec.Proxy, runtime.Proxy, runtime.Config.Proxy, vars); err != nil {
+		return resolved, err
+	}
+	if resolved.HTTPVersion, err = chooseResolvedValue(spec.HTTPVersion, runtime.HTTPVersion, runtime.Config.HTTPVersion, vars); err != nil {
+		return resolved, err
+	}
+	resolved.HTTPVersion = strings.ToLower(resolved.HTTPVersion)
+	if resolved.CACertFile, err = chooseResolvedPath(runtime.RootDir, spec.CACertFile, runtime.Config.CACertFile, vars); err != nil {
+		return resolved, err
+	}
+	if resolved.SelfSignedCertFile, err = chooseResolvedPath(runtime.RootDir, runtime.SelfSignedCertFile, spec.SelfSignedCertFile, runtime.Config.SelfSignedCertFile, vars); err != nil {
+		return resolved, err
+	}
 	if resolved.Auth.CACertFile != "" {
 		authCACert, err := resolveString(resolved.Auth.CACertFile, vars)
 		if err != nil {
@@ -223,7 +276,12 @@ func resolveRequest(spec RequestSpec, runtime RuntimeConfig, vars resolver) (res
 			resolved.CACertFile = resolved.Auth.CACertFile
 		}
 	}
-	resolved.Insecure = runtime.Config.Insecure || runtime.Insecure || spec.Insecure
+	resolved.Insecure = runtime.Config.Insecure || runtime.Insecure
+	if spec.InsecureSet {
+		resolved.Insecure = spec.Insecure
+	} else if spec.Insecure {
+		resolved.Insecure = true
+	}
 	resolved.Headers = http.Header{}
 	for key, values := range spec.Headers {
 		for _, value := range values {
@@ -289,6 +347,16 @@ func resolveRequest(spec RequestSpec, runtime RuntimeConfig, vars resolver) (res
 	if resolved.Auth.KeyFile == "" {
 		resolved.Auth.KeyFile = resolved.KeyFile
 	}
+	if strings.EqualFold(resolved.Auth.Scheme, "mtls") {
+		switch {
+		case resolved.Auth.CertFile == "":
+			return resolved, errors.New("mtls authentication requires a certificate file")
+		case isPKCS12Path(resolved.Auth.CertFile) && resolved.Auth.Password == "":
+			return resolved, errors.New("mtls authentication with a PKCS#12 certificate requires a password")
+		case !isPKCS12Path(resolved.Auth.CertFile) && resolved.Auth.KeyFile == "":
+			return resolved, errors.New("mtls authentication with a PEM certificate requires a key file")
+		}
+	}
 
 	if resolved.HTTPVersion == "" {
 		resolved.HTTPVersion = "auto"
@@ -303,9 +371,9 @@ func resolveRequest(spec RequestSpec, runtime RuntimeConfig, vars resolver) (res
 	return resolved, nil
 }
 
-func chooseResolvedValue(values ...any) string {
+func chooseResolvedValue(values ...any) (string, error) {
 	if len(values) == 0 {
-		return ""
+		return "", nil
 	}
 	var vars resolver
 	if last, ok := values[len(values)-1].(resolver); ok {
@@ -318,19 +386,23 @@ func chooseResolvedValue(values ...any) string {
 			continue
 		}
 		resolved, err := resolveString(value, vars)
-		if err == nil {
-			return resolved
+		if err != nil {
+			return "", err
 		}
+		return resolved, nil
 	}
-	return ""
+	return "", nil
 }
 
-func chooseResolvedPath(root string, values ...any) string {
-	value := chooseResolvedValue(values...)
-	if value == "" {
-		return ""
+func chooseResolvedPath(root string, values ...any) (string, error) {
+	value, err := chooseResolvedValue(values...)
+	if err != nil {
+		return "", err
 	}
-	return resolvePath(root, value)
+	if value == "" {
+		return "", nil
+	}
+	return resolvePath(root, value), nil
 }
 
 func resolvePath(root, value string) string {
@@ -453,6 +525,9 @@ func buildTransport(resolved resolvedRequest) (http.RoundTripper, io.Closer, err
 		return transport, transport, nil
 	}
 	if resolved.HTTPVersion == "2" {
+		if resolved.Proxy != "" {
+			return nil, nil, errors.New("HTTP/2 proxy support is not available")
+		}
 		if strings.TrimSpace(resolved.URL) != "" {
 			if parsedURL, err := url.Parse(resolved.URL); err == nil && parsedURL.Scheme != "https" {
 				return nil, nil, errors.New("HTTP/2 requires an https URL")
@@ -528,19 +603,52 @@ func buildTLSConfig(resolved resolvedRequest) (*tls.Config, error) {
 		keyFile = resolved.KeyFile
 	}
 	if certFile != "" || keyFile != "" {
-		if certFile == "" || keyFile == "" {
-			return nil, errors.New("both certificate and key files are required")
-		}
 		if resolved.Logger != nil {
-			resolved.Logger.Debugf("loading client certificate cert=%s key=%s", certFile, keyFile)
+			resolved.Logger.Debugf("loading client certificate cert=%s", certFile)
 		}
-		cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+		cert, err := loadClientCertificate(certFile, keyFile, resolved.Auth.Password)
 		if err != nil {
 			return nil, err
 		}
 		tlsConfig.Certificates = []tls.Certificate{cert}
 	}
 	return tlsConfig, nil
+}
+
+func loadClientCertificate(certFile, keyFile, password string) (tls.Certificate, error) {
+	if isPKCS12Path(certFile) {
+		pfxData, err := os.ReadFile(certFile)
+		if err != nil {
+			return tls.Certificate{}, err
+		}
+		privateKey, certificate, caCerts, err := pkcs12.DecodeChain(pfxData, password)
+		if err != nil {
+			return tls.Certificate{}, fmt.Errorf("load PKCS#12 client certificate %s: %w", certFile, err)
+		}
+		certificateChain := make([][]byte, 0, 1+len(caCerts))
+		certificateChain = append(certificateChain, certificate.Raw)
+		for _, caCert := range caCerts {
+			certificateChain = append(certificateChain, caCert.Raw)
+		}
+		return tls.Certificate{
+			Certificate: certificateChain,
+			PrivateKey:  privateKey,
+			Leaf:        certificate,
+		}, nil
+	}
+	if certFile == "" || keyFile == "" {
+		return tls.Certificate{}, errors.New("both certificate and key files are required")
+	}
+	return tls.LoadX509KeyPair(certFile, keyFile)
+}
+
+func isPKCS12Path(path string) bool {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".p12", ".pfx":
+		return true
+	default:
+		return false
+	}
 }
 
 func getAzureToken(ctx context.Context, resolved resolvedRequest) (string, error) {
@@ -711,7 +819,7 @@ func withTrace(req *http.Request, logger *Logger) *http.Request {
 	return req.WithContext(httptrace.WithClientTrace(req.Context(), trace))
 }
 
-func writeResponse(w io.Writer, req RequestSpec, resp *http.Response, body []byte, colorizer *Colorizer) error {
+func writeResponse(w io.Writer, req RequestSpec, resp *http.Response, body []byte, outputFile string, colorizer *Colorizer) error {
 	if resp == nil {
 		return errors.New("response is required")
 	}
@@ -750,6 +858,11 @@ func writeResponse(w io.Writer, req RequestSpec, resp *http.Response, body []byt
 		_, err := fmt.Fprintln(w, string(body))
 		return err
 	}
-	_, err := fmt.Fprintf(w, "%s\n", colorizer.Meta("%d bytes written", len(body)))
+	contentType := resp.Header.Get("Content-Type")
+	if outputFile != "" {
+		_, err := fmt.Fprintf(w, "%s\n", colorizer.Meta("binary body saved to %s; omitted from stdout (content-type=%s, bytes=%d)", outputFile, contentType, len(body)))
+		return err
+	}
+	_, err := fmt.Fprintf(w, "%s\n", colorizer.Meta("binary body omitted from stdout (content-type=%s, bytes=%d); use --output to save it", contentType, len(body)))
 	return err
 }

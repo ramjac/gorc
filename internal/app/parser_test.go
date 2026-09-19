@@ -62,6 +62,19 @@ func TestParseAuthDirectivePreservesPositionalPassword(t *testing.T) {
 	}
 }
 
+func TestParseInsecureDirectiveTracksExplicitFalse(t *testing.T) {
+	t.Parallel()
+
+	spec := RequestSpec{}
+	parseDirective(&spec, "# @insecure false")
+	if !spec.InsecureSet {
+		t.Fatal("expected insecure directive presence to be tracked")
+	}
+	if spec.Insecure {
+		t.Fatal("expected explicit false insecure directive")
+	}
+}
+
 func TestSplitSectionsLargeBody(t *testing.T) {
 	t.Parallel()
 

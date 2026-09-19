@@ -71,7 +71,7 @@ If no file is specified and the current directory contains exactly one `.http` f
 - `--vars-file`, `-e` load variables from JSON
 - `--var`, `-v` set CLI variables
 - `--body-file`, `-b` override the selected request body with a file
-- `--output`, `-o` save the selected response body
+- `--output`, `-o` save selected response bodies, appending them in execution order when multiple requests run
 - `--proxy`, `-p` use a proxy
 - `--http-version`, `-H` select the HTTP version
 - `--log-level`, `-l` control diagnostic logging on stderr
@@ -82,6 +82,8 @@ If no file is specified and the current directory contains exactly one `.http` f
 By default, `gorc` uses color for HTTP responses and diagnostic logging. Use `--no-color` or config `no_color: true` to disable it.
 
 By default, `gorc` stays quiet and only prints HTTP request results to stdout. Diagnostic logging is opt-in and is written to stderr.
+
+Each `gorc` invocation overwrites an existing output file on its first response, then appends later response bodies that target the same file.
 
 If a request is interrupted with Ctrl+C or a similar termination signal, `gorc` cancels the in-flight work, prints `cancelled` to stderr, and exits with code `130`.
 
@@ -131,6 +133,8 @@ POST https://api.example.com/widgets
 Content-Type: application/json
 ```
 
+Use `# @insecure false` on an individual request to override an `insecure: true` config default.
+
 Supported auth directives:
 
 ```http
@@ -139,8 +143,11 @@ Supported auth directives:
 # @auth digest {{user}} {{secret}}
 # @auth ntlm {{domain_user}} {{secret}}
 # @auth mtls cert=./certs/client.pem key=./certs/client-key.pem
+# @auth mtls cert=./certs/client.pfx password={{certificate_password}}
 # @auth azuread tenant_id={{tenant}} client_id={{client_id}} client_secret={{client_secret}} scope=https://management.azure.com/.default
 ```
+
+The `mtls` authentication scheme accepts either a PEM certificate with a separate key, or a password-protected PKCS#12 `.pfx`/`.p12` certificate. Credentials can be supplied by the request directive or configuration.
 
 For `basic`, `digest`, and `ntlm`, include both credentials after the scheme, with the username first. Values can use variables, for example `# @auth basic {{user}} {{secret}}`.
 
