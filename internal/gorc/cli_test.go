@@ -138,6 +138,62 @@ func TestRunInteractiveLoopsUntilQuit(t *testing.T) {
 	}
 }
 
+func TestParseRunOptionsUsesSingleHTTPFileInCurrentDirectory(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	requestPath := filepath.Join(dir, "only.http")
+	if err := os.WriteFile(requestPath, []byte("GET https://example.com\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = os.Chdir(cwd)
+	}()
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+
+	options, err := parseRunOptions(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if options.FilePath != "only.http" {
+		t.Fatalf("expected implicit file selection, got %q", options.FilePath)
+	}
+}
+
+func TestParseRunOptionsErrorsWhenMultipleHTTPFilesExist(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	for _, name := range []string{"one.http", "two.http"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("GET https://example.com\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = os.Chdir(cwd)
+	}()
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = parseRunOptions(nil)
+	if err == nil || !strings.Contains(err.Error(), "multiple .http files found") {
+		t.Fatalf("expected multiple-file error, got %v", err)
+	}
+}
+
 func writeHTTPFile(t *testing.T, content string) string {
 	t.Helper()
 

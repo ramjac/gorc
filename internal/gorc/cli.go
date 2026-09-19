@@ -74,6 +74,13 @@ func parseRunOptions(args []string) (RunOptions, error) {
 		return RunOptions{}, err
 	}
 	rest := fs.Args()
+	if len(rest) == 0 {
+		discovered, err := discoverImplicitHTTPFile(".")
+		if err != nil {
+			return RunOptions{}, err
+		}
+		rest = []string{discovered}
+	}
 	if len(rest) != 1 {
 		return RunOptions{}, errors.New("usage: gorc [flags] /absolute/or/relative/file.http")
 	}
@@ -104,6 +111,30 @@ func parseRunOptions(args []string) (RunOptions, error) {
 		SelfSignedCertFile: selfSigned,
 		Insecure:           insecure,
 	}, nil
+}
+
+func discoverImplicitHTTPFile(dir string) (string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", err
+	}
+	matches := make([]string, 0, 1)
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		if strings.EqualFold(filepath.Ext(entry.Name()), ".http") {
+			matches = append(matches, entry.Name())
+		}
+	}
+	switch len(matches) {
+	case 1:
+		return matches[0], nil
+	case 0:
+		return "", errors.New("usage: gorc [flags] /absolute/or/relative/file.http")
+	default:
+		return "", errors.New("multiple .http files found in the current directory; specify one explicitly")
+	}
 }
 
 func run(options RunOptions, stdout, stderr io.Writer) error {

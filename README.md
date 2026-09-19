@@ -36,6 +36,8 @@ go test ./...
 gorc [flags] /absolute/or/relative/file.http
 ```
 
+If no file is specified and the current directory contains exactly one `.http` file, `gorc` will use that file automatically.
+
 ### Common flags
 
 - `--all` execute every request in the file
