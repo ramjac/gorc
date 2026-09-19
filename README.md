@@ -60,6 +60,8 @@ By default, `gorc` uses color for HTTP responses and diagnostic logging. Use `--
 
 By default, `gorc` stays quiet and only prints HTTP request results to stdout. Diagnostic logging is opt-in and is written to stderr.
 
+If a request is interrupted with Ctrl+C or a similar termination signal, `gorc` cancels the in-flight work, prints `cancelled` to stderr, and exits with code `130`.
+
 ## `.http` format
 
 ### Single request
