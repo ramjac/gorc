@@ -10,7 +10,7 @@ import (
 	"strings"
 )
 
-var requestLinePattern = regexp.MustCompile(`^([A-Z]+)\s+(\S+)(?:\s+HTTP/\d(?:\.\d)?)?$`)
+var requestLinePattern = regexp.MustCompile(`^([A-Z]+)\s+(\S+)(?:\s+(HTTP/\d(?:\.\d)?))?$`)
 
 func parseHTTPFile(path string) (HTTPFile, error) {
 	abs, err := filepath.Abs(path)
@@ -131,12 +131,18 @@ func parseSection(section, sourcePath string) (RequestSpec, map[string]string, b
 
 		if !hasRequest {
 			matches := requestLinePattern.FindStringSubmatch(trimmed)
-			if len(matches) != 3 {
+			if len(matches) != 4 {
 				continue
 			}
 			hasRequest = true
 			spec.Method = matches[1]
 			spec.URL = matches[2]
+			if matches[3] != "" {
+				spec.HTTPVersion = strings.TrimPrefix(matches[3], "HTTP/")
+				if spec.HTTPVersion == "1.1" {
+					spec.HTTPVersion = "1"
+				}
+			}
 			state = "headers"
 			continue
 		}
@@ -205,7 +211,7 @@ func parseDirective(spec *RequestSpec, line string) {
 }
 
 func parseAuthDirective(value string) AuthConfig {
-	fields := strings.Fields(value)
+	fields := authFields(value)
 	if len(fields) == 0 {
 		return AuthConfig{}
 	}
@@ -220,6 +226,7 @@ func parseAuthDirective(value string) AuthConfig {
 		auth.Token = strings.Join(fields[1:], " ")
 		return auth
 	}
+
 	if username, ok := kv["username"]; ok {
 		auth.Username = username
 	}
@@ -289,4 +296,31 @@ func parseAuthDirective(value string) AuthConfig {
 	}
 
 	return auth
+}
+
+func authFields(value string) []string {
+	var fields []string
+	var current strings.Builder
+	depth := 0
+	for _, char := range strings.TrimSpace(value) {
+		switch char {
+		case '{':
+			depth++
+		case '}':
+			if depth > 0 {
+				depth--
+			}
+		case ' ', '\t':
+			if depth == 0 && current.Len() > 0 {
+				fields = append(fields, current.String())
+				current.Reset()
+				continue
+			}
+		}
+		current.WriteRune(char)
+	}
+	if current.Len() > 0 {
+		fields = append(fields, current.String())
+	}
+	return fields
 }

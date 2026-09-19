@@ -340,7 +340,7 @@ func runInteractive(ctx context.Context, requests []RequestSpec, runtime Runtime
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		selected, quit, err := interactiveSelection(requests, reader, stdout, stderr)
+		selected, quit, err := interactiveSelection(ctx, requests, reader, input, stdout, stderr)
 		if err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
@@ -356,16 +356,34 @@ func runInteractive(ctx context.Context, requests []RequestSpec, runtime Runtime
 	}
 }
 
-func interactiveSelection(requests []RequestSpec, reader *bufio.Reader, stdout, stderr io.Writer) ([]RequestSpec, bool, error) {
+func interactiveSelection(ctx context.Context, requests []RequestSpec, reader *bufio.Reader, input io.Reader, stdout, stderr io.Writer) ([]RequestSpec, bool, error) {
 	for {
 		fmt.Fprintln(stdout, "Available requests:")
 		for i, request := range requests {
 			fmt.Fprintf(stdout, "  %d) %s\n", i+1, request.Name)
 		}
 		fmt.Fprint(stdout, "Select request numbers, 'all', or 'q': ")
-		line, err := reader.ReadString('\n')
-		if err != nil {
-			return nil, false, err
+		type inputResult struct {
+			line string
+			err  error
+		}
+		result := make(chan inputResult, 1)
+		go func() {
+			line, err := reader.ReadString('\n')
+			result <- inputResult{line: line, err: err}
+		}()
+		var line string
+		select {
+		case <-ctx.Done():
+			if closer, ok := input.(io.Closer); ok {
+				_ = closer.Close()
+			}
+			return nil, false, ctx.Err()
+		case input := <-result:
+			if input.err != nil {
+				return nil, false, input.err
+			}
+			line = input.line
 		}
 		line = strings.TrimSpace(line)
 		switch strings.ToLower(line) {

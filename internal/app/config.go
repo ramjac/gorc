@@ -89,13 +89,14 @@ func loadVarsFile(path string) (map[string]string, string, error) {
 		return nil, "", err
 	}
 
-	v := viper.New()
-	v.SetConfigFile(abs)
-	if err := v.ReadInConfig(); err != nil {
+	data, err := os.ReadFile(abs)
+	if err != nil {
 		return nil, "", err
 	}
-
-	settings := v.AllSettings()
+	settings := map[string]any{}
+	if err := json.Unmarshal(data, &settings); err != nil {
+		return nil, "", err
+	}
 	vars := make(map[string]string, len(settings))
 	for key, value := range settings {
 		text, err := stringifyConfigValue(value)

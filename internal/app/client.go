@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
@@ -52,7 +53,7 @@ func executeRequests(ctx context.Context, plans []executionPlan, stdout io.Write
 	for i, plan := range plans {
 		resp, body, outputFile, err := executeRequest(ctx, plan)
 		if err != nil {
-			plan.Runtime.Logger.Errorf("request %q failed: %v", plan.Request.Name, err)
+			plan.Runtime.Logger.Errorf("request %q failed: %v", safeRequestLabel(plan.Request.Name, plan.Request.URL), err)
 			return err
 		}
 		if i > 0 {
@@ -84,8 +85,8 @@ func executeRequest(ctx context.Context, plan executionPlan) (*http.Response, []
 	if err != nil {
 		return nil, nil, "", err
 	}
-	logger.Infof("executing request %q", resolved.Name)
-	logger.Debugf("resolved request method=%s url=%s http_version=%s", resolved.Method, resolved.URL, resolved.HTTPVersion)
+	logger.Infof("executing request %q", safeRequestLabel(resolved.Name, resolved.URL))
+	logger.Debugf("resolved request method=%s url=%s http_version=%s", resolved.Method, safeURL(resolved.URL), resolved.HTTPVersion)
 
 	bodyBytes, err := buildBody(resolved)
 	if err != nil {
@@ -95,14 +96,20 @@ func executeRequest(ctx context.Context, plan executionPlan) (*http.Response, []
 		logger.Debugf("prepared request body bytes=%d", len(bodyBytes))
 	}
 
-	request, err := http.NewRequestWithContext(ctx, resolved.Method, resolved.URL, newBody(bodyBytes))
+	request, err := http.NewRequestWithContext(ctx, resolved.Method, resolved.URL, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return nil, nil, resolved.OutputFile, err
 	}
 	request.GetBody = func() (io.ReadCloser, error) {
-		return newBody(bodyBytes), nil
+		return io.NopCloser(bytes.NewReader(bodyBytes)), nil
 	}
 	for key, values := range resolved.Headers {
+		if strings.EqualFold(key, "Host") {
+			if len(values) > 0 {
+				request.Host = values[len(values)-1]
+			}
+			continue
+		}
 		for _, value := range values {
 			request.Header.Add(key, value)
 		}
@@ -160,26 +167,29 @@ func executeRequest(ctx context.Context, plan executionPlan) (*http.Response, []
 	started := time.Now()
 	resp, err := client.Do(request)
 	if err != nil {
-		logger.Errorf("request %q transport error: %v", resolved.Name, err)
+		logger.Errorf("request %q transport error: %v", safeRequestLabel(resolved.Name, resolved.URL), err)
 		return nil, nil, resolved.OutputFile, err
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, nil, resolved.OutputFile, err
-	}
-	logger.Infof("request %q completed with status=%s duration=%s", resolved.Name, resp.Status, time.Since(started).Round(time.Microsecond))
 	if resolved.OutputFile != "" {
 		outputFiles := runtime.outputFiles
 		if outputFiles == nil {
 			outputFiles = newOutputFileState()
 		}
-		if err := outputFiles.write(resolved.OutputFile, body); err != nil {
+		body, err := outputFiles.writeFromReader(resolved.OutputFile, resp.Body)
+		if err != nil {
 			return nil, nil, resolved.OutputFile, err
 		}
 		logger.Debugf("wrote response body to %s", resolved.OutputFile)
+		logger.Infof("request %q completed with status=%s duration=%s", safeRequestLabel(resolved.Name, resolved.URL), resp.Status, time.Since(started).Round(time.Microsecond))
+		return resp, body, resolved.OutputFile, nil
 	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, nil, resolved.OutputFile, err
+	}
+	logger.Infof("request %q completed with status=%s duration=%s", safeRequestLabel(resolved.Name, resolved.URL), resp.Status, time.Since(started).Round(time.Microsecond))
 	return resp, body, resolved.OutputFile, nil
 }
 
@@ -195,7 +205,6 @@ func (s *outputFileState) write(path string, body []byte) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-
 	flags := os.O_CREATE | os.O_WRONLY | os.O_TRUNC
 	if _, ok := s.initialized[path]; ok {
 		flags = os.O_CREATE | os.O_WRONLY | os.O_APPEND
@@ -213,6 +222,53 @@ func (s *outputFileState) write(path string, body []byte) error {
 	}
 	s.initialized[path] = struct{}{}
 	return nil
+}
+
+const maxResponsePreviewSize = 1 << 20
+
+func (s *outputFileState) writeFromReader(path string, reader io.Reader) ([]byte, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, err
+	}
+	flags := os.O_CREATE | os.O_WRONLY | os.O_TRUNC
+	if _, ok := s.initialized[path]; ok {
+		flags = os.O_CREATE | os.O_WRONLY | os.O_APPEND
+	}
+	file, err := os.OpenFile(path, flags, 0o644)
+	if err != nil {
+		return nil, err
+	}
+	preview := &previewWriter{limit: maxResponsePreviewSize}
+	_, copyErr := io.Copy(io.MultiWriter(file, preview), reader)
+	closeErr := file.Close()
+	if copyErr != nil {
+		return nil, copyErr
+	}
+	if closeErr != nil {
+		return nil, closeErr
+	}
+	s.initialized[path] = struct{}{}
+	return preview.Bytes(), nil
+}
+
+type previewWriter struct {
+	buffer bytes.Buffer
+	limit  int
+}
+
+func (w *previewWriter) Write(p []byte) (int, error) {
+	if w.buffer.Len() < w.limit {
+		remaining := w.limit - w.buffer.Len()
+		if len(p) > remaining {
+			p = p[:remaining]
+		}
+		_, _ = w.buffer.Write(p)
+	}
+	return len(p), nil
+}
+
+func (w *previewWriter) Bytes() []byte {
+	return w.buffer.Bytes()
 }
 
 type resolvedRequest struct {
@@ -503,6 +559,27 @@ func newBody(body []byte) io.ReadCloser {
 	return io.NopCloser(strings.NewReader(string(body)))
 }
 
+func safeURL(raw string) string {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return "<invalid URL>"
+	}
+	parsed.User = nil
+	query := parsed.Query()
+	for key := range query {
+		query.Set(key, "[REDACTED]")
+	}
+	parsed.RawQuery = query.Encode()
+	return parsed.String()
+}
+
+func safeRequestLabel(name, rawURL string) string {
+	if name == "" || name == rawURL {
+		return safeURL(rawURL)
+	}
+	return name
+}
+
 func buildTransport(resolved resolvedRequest) (http.RoundTripper, io.Closer, error) {
 	if resolved.Logger != nil {
 		resolved.Logger.Debugf("building transport http_version=%s proxy=%q insecure=%t", resolved.HTTPVersion, resolved.Proxy, resolved.Insecure)
@@ -692,7 +769,7 @@ func getAzureToken(ctx context.Context, resolved resolvedRequest) (string, error
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	if resolved.Logger != nil {
-		resolved.Logger.Debugf("requesting Azure AD token from %s", tokenURL)
+		resolved.Logger.Debugf("requesting Azure AD token from %s", safeURL(tokenURL))
 	}
 
 	tokenResolved := resolved
@@ -759,17 +836,17 @@ func (l loggingRoundTripper) RoundTrip(req *http.Request) (*http.Response, error
 		l.base = http.DefaultTransport
 	}
 	if l.logger != nil {
-		l.logger.Tracef("round trip start method=%s url=%s", req.Method, req.URL.String())
+		l.logger.Tracef("round trip start method=%s url=%s", req.Method, safeURL(req.URL.String()))
 	}
 	resp, err := l.base.RoundTrip(req)
 	if err != nil {
 		if l.logger != nil {
-			l.logger.Errorf("round trip failed method=%s url=%s err=%v", req.Method, req.URL.String(), err)
+			l.logger.Errorf("round trip failed method=%s url=%s err=%v", req.Method, safeURL(req.URL.String()), err)
 		}
 		return nil, err
 	}
 	if l.logger != nil {
-		l.logger.Tracef("round trip done method=%s url=%s status=%s", req.Method, req.URL.String(), resp.Status)
+		l.logger.Tracef("round trip done method=%s url=%s status=%s", req.Method, safeURL(req.URL.String()), resp.Status)
 	}
 	return resp, nil
 }
@@ -826,7 +903,7 @@ func writeResponse(w io.Writer, req RequestSpec, resp *http.Response, body []byt
 	if colorizer == nil {
 		colorizer = NewColorizer(false)
 	}
-	if _, err := fmt.Fprintf(w, "%s\n", colorizer.Title("### %s", req.Name)); err != nil {
+	if _, err := fmt.Fprintf(w, "%s\n", colorizer.Title("### %s", safeRequestLabel(req.Name, req.URL))); err != nil {
 		return err
 	}
 	if _, err := fmt.Fprintf(w, "%s\n", formatResponseStatus(colorizer, resp)); err != nil {
@@ -843,9 +920,12 @@ func writeResponse(w io.Writer, req RequestSpec, resp *http.Response, body []byt
 	if len(body) == 0 {
 		return nil
 	}
-	if strings.Contains(resp.Header.Get("Content-Type"), "application/json") {
+	mediaType, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type"))
+	if strings.HasSuffix(mediaType, "+json") || mediaType == "application/json" {
+		decoder := json.NewDecoder(bytes.NewReader(body))
+		decoder.UseNumber()
 		var pretty any
-		if err := json.Unmarshal(body, &pretty); err == nil {
+		if err := decoder.Decode(&pretty); err == nil {
 			formatted, err := json.MarshalIndent(pretty, "", "  ")
 			if err == nil {
 				_, err = fmt.Fprintln(w, string(formatted))
@@ -853,8 +933,7 @@ func writeResponse(w io.Writer, req RequestSpec, resp *http.Response, body []byt
 			}
 		}
 	}
-	mediaType, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type"))
-	if strings.HasPrefix(mediaType, "text/") || mediaType == "application/json" || mediaType == "" {
+	if strings.HasPrefix(mediaType, "text/") || strings.HasSuffix(mediaType, "+xml") || mediaType == "application/xml" || mediaType == "" {
 		_, err := fmt.Fprintln(w, string(body))
 		return err
 	}
