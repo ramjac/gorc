@@ -23,13 +23,15 @@ On first run the server generates the demo certificates in `examples/todoapi/gen
 From the repository root:
 
 ```bash
-go run ./cmd/gorc -c ./examples/gorc-demo.json ./examples/todo-demo.http --all
+GORC_DEMO_AZURE_TENANT=todo-demo-tenant \
+  go run ./cmd/gorc -c ./examples/gorc-demo.json ./examples/todo-demo.http --all
 ```
 
 You can also run just one request by name, for example:
 
 ```bash
-go run ./cmd/gorc -c ./examples/gorc-demo.json ./examples/todo-demo.http --name "mtls todos"
+GORC_DEMO_AZURE_TENANT=todo-demo-tenant \
+  go run ./cmd/gorc -c ./examples/gorc-demo.json ./examples/todo-demo.http --name "mtls todos"
 ```
 
 The demo request file exercises:
@@ -40,6 +42,7 @@ The demo request file exercises:
 - bearer auth
 - digest auth
 - Azure AD-style client credentials
+- environment-variable substitution for the Azure tenant ID
 - mTLS client certificate auth
 - request body and response output helpers
 

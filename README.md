@@ -32,11 +32,11 @@ go test ./...
 
 ## Examples
 
-The repository includes a runnable demo in `/home/runner/work/gorc/gorc/examples`.
+The repository includes a runnable demo in `examples/`.
 
-- `/home/runner/work/gorc/gorc/examples/todoapi` contains a small in-memory Go todo API
-- `/home/runner/work/gorc/gorc/examples/todo-demo.http` contains demo requests for the example API
-- `/home/runner/work/gorc/gorc/examples/gorc-demo.json` contains matching `gorc` config defaults and variables
+- `examples/todoapi` contains a small in-memory Go todo API
+- `examples/todo-demo.http` contains demo requests for the example API
+- `examples/gorc-demo.json` contains matching `gorc` config defaults and variables
 
 Start the demo API:
 
@@ -47,7 +47,8 @@ go run ./examples/todoapi
 Then run the demo requests:
 
 ```bash
-go run ./cmd/gorc -c ./examples/gorc-demo.json ./examples/todo-demo.http --all
+GORC_DEMO_AZURE_TENANT=todo-demo-tenant \
+  go run ./cmd/gorc -c ./examples/gorc-demo.json ./examples/todo-demo.http --all
 ```
 
 ## Usage
@@ -103,7 +104,7 @@ Accept: application/json
 POST {{base}}/anything/login
 Content-Type: application/json
 
-{"username":"demo","password":"secret"}
+{"user":"demo","secret":"value"}
 
 ###
 # @name me
@@ -131,15 +132,15 @@ Content-Type: application/json
 Supported auth directives:
 
 ```http
-# @auth basic username={{user}} ******
+# @auth basic {{user}} {{secret}}
 # @auth bearer token={{token}}
-# @auth digest username={{user}} ******
-# @auth ntlm username={{domain_user}} ******
+# @auth digest {{user}} {{secret}}
+# @auth ntlm {{domain_user}} {{secret}}
 # @auth mtls cert=./certs/client.pem key=./certs/client-key.pem
 # @auth azuread tenant_id={{tenant}} client_id={{client_id}} client_secret={{client_secret}} scope=https://management.azure.com/.default
 ```
 
-For `basic`, `digest`, and `ntlm`, include both username and password values on the directive.
+For `basic`, `digest`, and `ntlm`, include both credentials after the scheme, with the username first. Values can use variables, for example `# @auth basic {{user}} {{secret}}`.
 
 Azure AD also supports:
 

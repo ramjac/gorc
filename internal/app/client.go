@@ -150,18 +150,19 @@ func executeRequest(ctx context.Context, plan executionPlan) (*http.Response, []
 		Timeout:   resolved.Timeout,
 	}
 
+	started := time.Now()
 	resp, err := client.Do(request)
 	if err != nil {
 		logger.Errorf("request %q transport error: %v", resolved.Name, err)
 		return nil, nil, err
 	}
 	defer resp.Body.Close()
-	logger.Infof("request %q completed with status=%s", resolved.Name, resp.Status)
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, nil, err
 	}
+	logger.Infof("request %q completed with status=%s duration=%s", resolved.Name, resp.Status, time.Since(started).Round(time.Microsecond))
 	if resolved.OutputFile != "" {
 		if err := os.MkdirAll(filepath.Dir(resolved.OutputFile), 0o755); err != nil {
 			return nil, nil, err

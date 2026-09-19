@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"io"
@@ -37,6 +38,38 @@ func TestBasicAuthTodos(t *testing.T) {
 	}
 	if !strings.Contains(resp.Body.String(), `"auth":"basic"`) {
 		t.Fatalf("unexpected response %s", resp.Body.String())
+	}
+}
+
+func TestRequestLoggingIncludesSafeRequestAndAuthDetails(t *testing.T) {
+	var logs bytes.Buffer
+	server, err := newDemoServer("127.0.0.1:0", "127.0.0.1:0", "127.0.0.1:0", log.New(&logs, "", 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/auth/basic/todos?include_done=true", nil)
+	req.SetBasicAuth(basicUsername, basicPassword)
+	resp := httptest.NewRecorder()
+	server.routes().ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.Code)
+	}
+	for _, want := range []string{
+		"method=GET",
+		"path=/auth/basic/todos",
+		"query=true",
+		"auth=basic",
+		"authorization=true",
+		"status=200",
+	} {
+		if !strings.Contains(logs.String(), want) {
+			t.Fatalf("expected log to contain %q, got %q", want, logs.String())
+		}
+	}
+	if strings.Contains(logs.String(), "include_done=true") || strings.Contains(logs.String(), basicPassword) {
+		t.Fatalf("request logging exposed query values or credentials: %q", logs.String())
 	}
 }
 

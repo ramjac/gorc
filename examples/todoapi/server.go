@@ -204,7 +204,64 @@ func (s *demoServer) routes() http.Handler {
 	mux.Handle("/auth/ntlm/todos", s.withAuth("ntlm", s.ntlmAuth(http.HandlerFunc(s.handleTodos))))
 	mux.Handle("/auth/azure/todos", s.withAuth("azuread", s.bearerAuth(azureAccessToken, http.HandlerFunc(s.handleTodos))))
 	mux.Handle("/auth/mtls/todos", s.withAuth("mtls", s.mtlsAuth(http.HandlerFunc(s.handleTodos))))
-	return mux
+	return s.logRequests(mux)
+}
+
+type responseRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (w *responseRecorder) WriteHeader(status int) {
+	w.status = status
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *responseRecorder) Write(body []byte) (int, error) {
+	if w.status == 0 {
+		w.WriteHeader(http.StatusOK)
+	}
+	return w.ResponseWriter.Write(body)
+}
+
+func (s *demoServer) logRequests(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		started := time.Now()
+		recorder := &responseRecorder{ResponseWriter: w}
+		next.ServeHTTP(recorder, r)
+
+		if s.logger == nil {
+			return
+		}
+		status := recorder.status
+		if status == 0 {
+			status = http.StatusOK
+		}
+		s.logger.Printf(
+			"request method=%s path=%s query=%t auth=%s authorization=%t client_cert=%t status=%d duration=%s",
+			r.Method,
+			r.URL.Path,
+			r.URL.RawQuery != "",
+			requestAuthScheme(r.URL.Path),
+			r.Header.Get("Authorization") != "",
+			r.TLS != nil && len(r.TLS.PeerCertificates) > 0,
+			status,
+			time.Since(started).Round(time.Microsecond),
+		)
+	})
+}
+
+func requestAuthScheme(path string) string {
+	switch {
+	case path == "/oauth2/v2.0/token":
+		return "azuread-client-credentials"
+	case strings.HasPrefix(path, "/auth/"):
+		parts := strings.Split(strings.TrimPrefix(path, "/auth/"), "/")
+		if len(parts) > 0 && parts[0] != "" {
+			return parts[0]
+		}
+	}
+	return "none"
 }
 
 func (s *demoServer) withAuth(name string, next http.Handler) http.Handler {

@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -80,6 +81,9 @@ func TestRunTraceLoggingEmitsDiagnostics(t *testing.T) {
 		if !strings.Contains(logs, want) {
 			t.Fatalf("expected log output to contain %q, got %q", want, logs)
 		}
+	}
+	if !regexp.MustCompile(`completed with status=200 OK duration=\d+(?:\.\d+)?(?:ns|µs|ms|s)`).MatchString(logs) {
+		t.Fatalf("expected completion log to include duration, got %q", logs)
 	}
 }
 

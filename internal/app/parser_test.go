@@ -42,6 +42,9 @@ func TestParseHTTPFileMultipleRequests(t *testing.T) {
 	if parsed.Requests[1].Auth.Scheme != "basic" {
 		t.Fatalf("expected basic auth, got %q", parsed.Requests[1].Auth.Scheme)
 	}
+	if parsed.Requests[1].Auth.Username != "{{username}}" || parsed.Requests[1].Auth.Password != "{{password}}" {
+		t.Fatalf("expected auth variables to be preserved, got %#v", parsed.Requests[1].Auth)
+	}
 	if parsed.Requests[1].FileVars["username"] != "alice" {
 		t.Fatalf("expected section variable to be preserved")
 	}

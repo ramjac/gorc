@@ -6,7 +6,7 @@
 @bearer_token = {{$config bearer_token}}
 @digest_username = {{$config digest_username}}
 @digest_secret = {{$config digest_secret}}
-@azure_tenant = {{$config azure_tenant}}
+@azure_tenant = {{$env GORC_DEMO_AZURE_TENANT}}
 @azure_client_id = {{$config azure_client_id}}
 @azure_client_secret = {{$config azure_client_secret}}
 @azure_scope = {{$config azure_scope}}
@@ -21,7 +21,7 @@ Accept: application/json
 
 ###
 # @name basic create todo
-# @auth basic username={{basic_username}} password={{basic_secret}}
+# @auth basic {{basic_username}} {{basic_secret}}
 POST {{self_signed_base}}/auth/basic/todos
 Content-Type: application/json
 
@@ -29,7 +29,7 @@ Content-Type: application/json
 
 ###
 # @name basic list todos
-# @auth basic username={{basic_username}} password={{basic_secret}}
+# @auth basic {{basic_username}} {{basic_secret}}
 # @output ./output/basic-todos.json
 GET {{self_signed_base}}/auth/basic/todos
 Accept: application/json
@@ -42,7 +42,7 @@ Accept: application/json
 
 ###
 # @name digest todos
-# @auth digest username={{digest_username}} password={{digest_secret}}
+# @auth digest {{digest_username}} {{digest_secret}}
 GET {{self_signed_base}}/auth/digest/todos
 Accept: application/json
 

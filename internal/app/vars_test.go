@@ -19,6 +19,18 @@ func TestResolveStringPrecedence(t *testing.T) {
 	}
 }
 
+func TestResolveStringUsesExplicitEnvironmentVariable(t *testing.T) {
+	t.Setenv("GORC_DEMO_AZURE_TENANT", "todo-demo-tenant")
+
+	got, err := resolveString("{{$env GORC_DEMO_AZURE_TENANT}}", resolver{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "todo-demo-tenant" {
+		t.Fatalf("unexpected environment value: %q", got)
+	}
+}
+
 func TestResolveStringUsesVarsFileBetweenFileAndConfig(t *testing.T) {
 	t.Parallel()
 
