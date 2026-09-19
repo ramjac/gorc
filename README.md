@@ -40,20 +40,20 @@ If no file is specified and the current directory contains exactly one `.http` f
 
 ### Common flags
 
-- `--all` execute every request in the file
-- `--index 1,3` execute specific 1-based request indexes
-- `--name "request name"` execute requests by name
-- `--interactive` choose requests interactively
-- `--config /path/to/gorc.json` load config defaults
-- `--vars-file /path/to/vars.json` load variables from JSON
-- `--var key=value` set CLI variables
-- `--body-file /path/to/body.json` override the selected request body with a file
-- `--output /path/to/response.out` save the selected response body
-- `--proxy http://127.0.0.1:8080` use a proxy
-- `--http-version auto|1|2|3` select the HTTP version
-- `--log-level none|error|info|debug|trace` control diagnostic logging on stderr
-- `--self-signed-cert /path/to/server.pem` trust a specific self-signed server certificate
-- `--insecure` skip TLS verification
+- `--all`, `-a` execute every request in the file
+- `--index`, `-x` execute specific 1-based request indexes, for example `-x 1,3`
+- `--name`, `-n` execute requests by name
+- `--interactive`, `-i` choose requests interactively
+- `--config`, `-c` load config defaults
+- `--vars-file`, `-e` load variables from JSON
+- `--var`, `-v` set CLI variables
+- `--body-file`, `-b` override the selected request body with a file
+- `--output`, `-o` save the selected response body
+- `--proxy`, `-p` use a proxy
+- `--http-version`, `-H` select the HTTP version
+- `--log-level`, `-l` control diagnostic logging on stderr
+- `--self-signed-cert`, `-s` trust a specific self-signed server certificate
+- `--insecure`, `-k` skip TLS verification
 
 By default, `gorc` stays quiet and only prints HTTP request results to stdout. Diagnostic logging is opt-in and is written to stderr.
 

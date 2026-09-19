@@ -194,6 +194,63 @@ func TestParseRunOptionsErrorsWhenMultipleHTTPFilesExist(t *testing.T) {
 	}
 }
 
+func TestParseRunOptionsSupportsInteractiveShortFlag(t *testing.T) {
+	t.Parallel()
+
+	options, err := parseRunOptions([]string{"-i", "requests.http"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !options.Interactive {
+		t.Fatal("expected -i to enable interactive mode")
+	}
+	if options.FilePath != "requests.http" {
+		t.Fatalf("unexpected file path %q", options.FilePath)
+	}
+}
+
+func TestParseRunOptionsSupportsMixedShortFlags(t *testing.T) {
+	t.Parallel()
+
+	options, err := parseRunOptions([]string{
+		"-a",
+		"-c", "config.json",
+		"-o", "response.out",
+		"-b", "body.json",
+		"-p", "http://proxy.local:8080",
+		"-H", "2",
+		"-l", "debug",
+		"-s", "server.pem",
+		"-k",
+		"-n", "login",
+		"-v", "token=abc",
+		"-x", "1,2",
+		"-e", "vars.json",
+		"requests.http",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !options.All || !options.Insecure {
+		t.Fatalf("expected bool short flags to be set: %#v", options)
+	}
+	if options.ConfigPath != "config.json" || options.OutputFile != "response.out" || options.BodyFile != "body.json" {
+		t.Fatalf("unexpected file options: %#v", options)
+	}
+	if options.Proxy != "http://proxy.local:8080" || options.HTTPVersion != "2" || options.LogLevel != "debug" || options.SelfSignedCertFile != "server.pem" {
+		t.Fatalf("unexpected transport options: %#v", options)
+	}
+	if len(options.Names) != 1 || options.Names[0] != "login" {
+		t.Fatalf("unexpected names: %#v", options.Names)
+	}
+	if len(options.Indices) != 2 || options.Indices[0] != 1 || options.Indices[1] != 2 {
+		t.Fatalf("unexpected indices: %#v", options.Indices)
+	}
+	if options.VarsFile != "vars.json" || options.Vars["token"] != "abc" {
+		t.Fatalf("unexpected vars config: file=%q vars=%#v", options.VarsFile, options.Vars)
+	}
+}
+
 func writeHTTPFile(t *testing.T, content string) string {
 	t.Helper()
 
