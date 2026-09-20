@@ -100,6 +100,7 @@ func executeRequest(ctx context.Context, plan executionPlan) (responseResult, er
 	if err != nil {
 		return responseResult{}, err
 	}
+	logger.Infof("This is a testing change");
 	logger.Infof("executing request %q", safeRequestLabel(resolved.Name, resolved.URL))
 	logger.Debugf("resolved request method=%s url=%s http_version=%s", resolved.Method, safeURL(resolved.URL), resolved.HTTPVersion)
 
