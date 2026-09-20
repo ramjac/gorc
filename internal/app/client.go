@@ -257,6 +257,7 @@ type previewWriter struct {
 }
 
 func (w *previewWriter) Write(p []byte) (int, error) {
+	written := len(p)
 	if w.buffer.Len() < w.limit {
 		remaining := w.limit - w.buffer.Len()
 		if len(p) > remaining {
@@ -264,7 +265,7 @@ func (w *previewWriter) Write(p []byte) (int, error) {
 		}
 		_, _ = w.buffer.Write(p)
 	}
-	return len(p), nil
+	return written, nil
 }
 
 func (w *previewWriter) Bytes() []byte {
@@ -426,7 +427,7 @@ func resolveRequest(spec RequestSpec, runtime RuntimeConfig, vars resolver) (res
 		return resolved, fmt.Errorf("unsupported http version %q", resolved.HTTPVersion)
 	}
 	if runtime.Logger != nil && runtime.Logger.Enabled(LogLevelDebug) {
-		runtime.Logger.Debugf("resolved request config name=%q proxy=%q output_file=%q body_file=%q", resolved.Name, resolved.Proxy, resolved.OutputFile, resolved.BodyFile)
+		runtime.Logger.Debugf("resolved request config name=%q proxy=%q output_file=%q body_file=%q", safeRequestLabel(resolved.Name, resolved.URL), safeURL(resolved.Proxy), resolved.OutputFile, resolved.BodyFile)
 	}
 
 	return resolved, nil
@@ -583,6 +584,9 @@ func safeRequestLabel(name, rawURL string) string {
 	if name == "" || name == rawURL {
 		return safeURL(rawURL)
 	}
+	if strings.HasSuffix(name, rawURL) {
+		return strings.TrimSuffix(name, rawURL) + safeURL(rawURL)
+	}
 	return name
 }
 
@@ -642,7 +646,7 @@ func buildTransport(resolved resolvedRequest) (http.RoundTripper, io.Closer, err
 		}
 		transport.Proxy = http.ProxyURL(proxyURL)
 		if resolved.Logger != nil {
-			resolved.Logger.Debugf("using proxy %s", proxyURL.Redacted())
+			resolved.Logger.Debugf("using proxy %s", safeURL(proxyURL.String()))
 		}
 	}
 	return transport, nil, nil
@@ -933,10 +937,13 @@ func writeResponse(w io.Writer, req RequestSpec, resp *http.Response, body []byt
 		decoder.UseNumber()
 		var pretty any
 		if err := decoder.Decode(&pretty); err == nil {
-			formatted, err := json.MarshalIndent(pretty, "", "  ")
-			if err == nil {
-				_, err = fmt.Fprintln(w, string(formatted))
-				return err
+			var trailing any
+			if decoder.Decode(&trailing) == io.EOF {
+				formatted, err := json.MarshalIndent(pretty, "", "  ")
+				if err == nil {
+					_, err = fmt.Fprintln(w, string(formatted))
+					return err
+				}
 			}
 		}
 	}
