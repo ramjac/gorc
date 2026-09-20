@@ -76,8 +76,14 @@ jobs:
         run: |
           set -euo pipefail
           cd dist
-          find . -mindepth 2 -type f -exec mv {} . \;
-          find . -mindepth 1 -type d -empty -delete
+          # Each artifact was downloaded into its own directory named after
+          # the artifact (which matches the asset filename), so move each
+          # file up one level into a flat dist/ layout, then drop the now-
+          # empty per-artifact directories.
+          for dir in */; do
+            mv "${dir%/}"/* .
+            rmdir "${dir%/}"
+          done
           sha256sum * > SHA256SUMS.txt
 
       - name: Create GitHub release
