@@ -133,3 +133,64 @@ func TestWriteResponseReportsBinaryBodySavedToOutput(t *testing.T) {
 		t.Fatalf("expected binary saved details, got %q", got)
 	}
 }
+
+func TestWriteResponseDoesNotPrettyPrintTruncatedJSONPreview(t *testing.T) {
+	t.Parallel()
+
+	var out strings.Builder
+	resp := &http.Response{
+		Status:     "200 OK",
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+	}
+	// A complete JSON value followed only by whitespace: on its own this
+	// looks like the full body to a streaming decoder, even though the
+	// preview was capped and bytes were actually omitted.
+	body := []byte(`{"a":1}` + "\n")
+	metadata := responseMetadata{totalBytes: 5 * 1024 * 1024, previewTruncated: true}
+	if err := writeResponse(&out, RequestSpec{Name: "demo"}, resp, body, "", NewColorizer(false), metadata); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if strings.Contains(got, "  \"a\": 1") {
+		t.Fatalf("expected the truncated preview not to be pretty-printed as if complete, got %q", got)
+	}
+	if !strings.Contains(got, `{"a":1}`) {
+		t.Fatalf("expected the raw truncated preview to be printed, got %q", got)
+	}
+	if !strings.Contains(got, "response preview truncated") {
+		t.Fatalf("expected a truncation notice, got %q", got)
+	}
+}
+
+func TestWriteResponseStillPrettyPrintsUntruncatedJSON(t *testing.T) {
+	t.Parallel()
+
+	var out strings.Builder
+	resp := &http.Response{
+		Status:     "200 OK",
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+	}
+	body := []byte(`{"a":1}`)
+	if err := writeResponse(&out, RequestSpec{Name: "demo"}, resp, body, "", NewColorizer(false)); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "\"a\": 1") {
+		t.Fatalf("expected the untruncated JSON body to be pretty-printed, got %q", got)
+	}
+}
+
+func TestFormatHeaderLineRendersRepeatedValuesOnSeparateLines(t *testing.T) {
+	t.Parallel()
+
+	got := formatHeaderLine(NewColorizer(false), "Set-Cookie", []string{
+		"a=1; Path=/, weird",
+		"b=2; Path=/",
+	})
+	want := "Set-Cookie: a=1; Path=/, weird\nSet-Cookie: b=2; Path=/"
+	if got != want {
+		t.Fatalf("expected each header value on its own repeated-label line, got %q want %q", got, want)
+	}
+}

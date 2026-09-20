@@ -244,6 +244,7 @@ Example:
 - `info` logging includes request start and completion status lines.
 - `error` logging includes transport and request failures.
 - Response headings, status lines, headers, and log labels are colorized by default.
+- Repeated response headers (such as `Set-Cookie`) are printed on separate, repeated header lines rather than joined with commas, since some header values can't be safely combined into one comma-separated line.
 - HTTP/2 selection is strict in this CLI and currently requires an `https://` endpoint.
 - A configured or directed self-signed certificate is added to the client trust store without disabling all TLS verification.
 - HTTP/3 requires HTTPS and does not currently support proxies in this CLI.

@@ -1153,7 +1153,7 @@ func writeResponse(w io.Writer, req RequestSpec, resp *http.Response, body []byt
 	}
 	mediaType, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type"))
 	isJSON := strings.HasSuffix(mediaType, "+json") || mediaType == "application/json"
-	if isJSON {
+	if isJSON && !info.previewTruncated {
 		decoder := json.NewDecoder(bytes.NewReader(body))
 		decoder.UseNumber()
 		var pretty any

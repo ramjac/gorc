@@ -114,10 +114,16 @@ func certificatesExist(bundle certificateBundle) bool {
 }
 
 func certificatesMatchHosts(bundle certificateBundle, hosts []string) (bool, error) {
-	for _, path := range []string{bundle.SelfSignedCert, bundle.CAServerCert} {
+	for _, path := range []string{bundle.SelfSignedCert, bundle.CACert, bundle.CAServerCert, bundle.MTLSClientCert} {
 		cert, err := readCertificate(path)
 		if err != nil {
 			return false, err
+		}
+		if !certificateIsCurrentlyValid(cert) {
+			return false, nil
+		}
+		if path == bundle.CACert || path == bundle.MTLSClientCert {
+			continue
 		}
 		for _, host := range hosts {
 			if !certificateMatchesHost(cert, host) {
@@ -126,6 +132,14 @@ func certificatesMatchHosts(bundle certificateBundle, hosts []string) (bool, err
 		}
 	}
 	return true, nil
+}
+
+// certificateIsCurrentlyValid reports whether now falls within the
+// certificate's validity window, so expired or not-yet-valid generated
+// material triggers regeneration instead of being reused indefinitely.
+func certificateIsCurrentlyValid(cert *x509.Certificate) bool {
+	now := time.Now()
+	return !now.Before(cert.NotBefore) && !now.After(cert.NotAfter)
 }
 
 func readCertificate(path string) (*x509.Certificate, error) {

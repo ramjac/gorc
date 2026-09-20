@@ -117,14 +117,15 @@ func formatHeaderLine(colorizer *Colorizer, key string, values []string) string 
 	if len(values) == 0 {
 		return fmt.Sprintf("%s:", label)
 	}
-	return fmt.Sprintf("%s: %s", label, values[0]) + joinExtraValues(values[1:])
-}
-
-func joinExtraValues(values []string) string {
-	if len(values) == 0 {
-		return ""
+	// Render each value on its own line instead of joining them with
+	// commas: some headers (notably Set-Cookie) carry attributes that may
+	// themselves contain commas, so combining repeated values into one
+	// comma-separated line can misrepresent the actual header values.
+	lines := make([]string, len(values))
+	for i, value := range values {
+		lines[i] = fmt.Sprintf("%s: %s", label, value)
 	}
-	return ", " + strings.Join(values, ", ")
+	return strings.Join(lines, "\n")
 }
 
 func formatResponseStatus(colorizer *Colorizer, resp *http.Response) string {
