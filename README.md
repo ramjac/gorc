@@ -154,6 +154,10 @@ For `basic`, `digest`, and `ntlm`, include both credentials after the scheme, wi
 
 Use `# @auth none` on an individual request to disable an auth scheme configured at the CLI or config level, for example when a shared `.http` file mixes authenticated and public/unrelated endpoints.
 
+When a request has an active auth scheme, gorc does not automatically follow redirect responses (3xx); the redirect response is returned as-is instead. This prevents credentials (Basic/digest/NTLM headers, bearer tokens, or an mTLS client certificate) from being forwarded to whatever server a redirect points at. Unauthenticated requests continue to follow redirects normally.
+
+A custom `# @auth azuread` `token_url` must use `https://`; client_id/client_secret are posted in the request body and would otherwise be exposed in transit over plain HTTP.
+
 Azure AD also supports:
 
 - `resource=...` to use the legacy token endpoint

@@ -181,6 +181,19 @@ func executeRequest(ctx context.Context, plan executionPlan) (responseResult, er
 		Jar:       runtime.CookieJar,
 		Timeout:   resolved.Timeout,
 	}
+	if strings.TrimSpace(resolved.Auth.Scheme) != "" {
+		// http.Client's default redirect handling reuses this same
+		// credential-bearing transport/client for the redirected request.
+		// An mTLS client certificate would be presented to whatever origin
+		// the redirect points at if it requests one, and the digest/NTLM
+		// RoundTrippers would answer that origin's auth challenges using
+		// the configured credentials. Disable automatic redirects whenever
+		// an auth scheme is active so credentials are never forwarded to a
+		// server the caller didn't explicitly request.
+		client.CheckRedirect = func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		}
+	}
 
 	started := time.Now()
 	resp, err := client.Do(request)
@@ -943,6 +956,14 @@ func getAzureToken(ctx context.Context, resolved resolvedRequest) (string, error
 
 	if resolved.Auth.ClientID == "" || resolved.Auth.ClientSecret == "" {
 		return "", errors.New("azuread auth requires token or client_id and client_secret")
+	}
+
+	if parsedTokenURL, parseErr := url.Parse(tokenURL); parseErr != nil {
+		return "", sanitizeError(parseErr, tokenURL)
+	} else if parsedTokenURL.Scheme != "https" {
+		// client_id/client_secret are posted in the request body, so an
+		// http:// token_url would expose them to any on-path observer.
+		return "", fmt.Errorf("azuread token_url %q must use https", safeURL(tokenURL))
 	}
 
 	form.Set("grant_type", "client_credentials")

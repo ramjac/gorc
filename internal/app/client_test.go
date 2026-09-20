@@ -796,6 +796,74 @@ func TestExecuteRequestAuthNoneDisablesConfiguredDefault(t *testing.T) {
 	}
 }
 
+func TestExecuteRequestDoesNotFollowRedirectsWhenAuthIsActive(t *testing.T) {
+	t.Parallel()
+
+	var redirectTargetHit bool
+	var redirectTargetAuth string
+	redirectTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		redirectTargetHit = true
+		redirectTargetAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer redirectTarget.Close()
+
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, redirectTarget.URL, http.StatusFound)
+	}))
+	defer origin.Close()
+
+	result, err := executeRequest(context.Background(), executionPlan{
+		Request: RequestSpec{
+			Name:    "authenticated redirect",
+			Method:  http.MethodGet,
+			URL:     origin.URL,
+			Headers: http.Header{},
+			Auth:    AuthConfig{Scheme: "basic", Username: "alice", Password: "secret"},
+		},
+		Runtime: RuntimeConfig{Config: Config{Vars: map[string]string{}}, FileVars: map[string]string{}, CLIVars: map[string]string{}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.resp.StatusCode != http.StatusFound {
+		t.Fatalf("expected the redirect response to be returned unfollowed, got status %d", result.resp.StatusCode)
+	}
+	if redirectTargetHit {
+		t.Fatalf("expected the redirect target not to be contacted; credentials would otherwise be forwarded to it, got Authorization=%q", redirectTargetAuth)
+	}
+}
+
+func TestExecuteRequestFollowsRedirectsWhenNoAuthIsConfigured(t *testing.T) {
+	t.Parallel()
+
+	redirectTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer redirectTarget.Close()
+
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, redirectTarget.URL, http.StatusFound)
+	}))
+	defer origin.Close()
+
+	result, err := executeRequest(context.Background(), executionPlan{
+		Request: RequestSpec{
+			Name:    "unauthenticated redirect",
+			Method:  http.MethodGet,
+			URL:     origin.URL,
+			Headers: http.Header{},
+		},
+		Runtime: RuntimeConfig{Config: Config{Vars: map[string]string{}}, FileVars: map[string]string{}, CLIVars: map[string]string{}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected the redirect to be followed for an unauthenticated request, got status %d", result.resp.StatusCode)
+	}
+}
+
 func TestExecuteRequestRejectsUnknownAuthScheme(t *testing.T) {
 	t.Parallel()
 
@@ -1044,6 +1112,34 @@ func TestGetAzureTokenRequiresTenantIDForBuiltinEndpoint(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "tenant_id") {
 		t.Fatalf("expected tenant_id requirement error, got %v", err)
+	}
+}
+
+func TestGetAzureTokenRejectsPlainHTTPTokenURL(t *testing.T) {
+	t.Parallel()
+
+	var hit bool
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hit = true
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"token-value"}`))
+	}))
+	defer tokenServer.Close()
+
+	_, err := getAzureToken(context.Background(), resolvedRequest{
+		Timeout: 5 * time.Second,
+		Auth: AuthConfig{
+			Scheme:       "azuread",
+			ClientID:     "client-id",
+			ClientSecret: "client-secret",
+			TokenURL:     tokenServer.URL,
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "must use https") {
+		t.Fatalf("expected an https requirement error for a plain-http token_url, got %v", err)
+	}
+	if hit {
+		t.Fatal("expected client_id/client_secret to never be sent to a plain-http token_url")
 	}
 }
 
