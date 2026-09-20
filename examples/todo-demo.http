@@ -1,0 +1,65 @@
+@self_signed_base = {{$config self_signed_base}}
+@ca_base = {{$config ca_base}}
+@mtls_base = {{$config mtls_base}}
+@basic_username = {{$config basic_username}}
+@basic_secret = {{$config basic_secret}}
+@bearer_token = {{$config bearer_token}}
+@digest_username = {{$config digest_username}}
+@digest_secret = {{$config digest_secret}}
+@azure_tenant = {{$env GORC_DEMO_AZURE_TENANT}}
+@azure_client_id = {{$config azure_client_id}}
+@azure_client_secret = {{$config azure_client_secret}}
+@azure_scope = {{$config azure_scope}}
+@demo_ca_cert = {{$config demo_ca_cert}}
+@mtls_client_cert = {{$config mtls_client_cert}}
+@mtls_client_key = {{$config mtls_client_key}}
+
+###
+# @name self-signed health
+GET {{self_signed_base}}/public/health
+Accept: application/json
+
+###
+# @name basic create todo
+# @auth basic {{basic_username}} {{basic_secret}}
+POST {{self_signed_base}}/auth/basic/todos
+Content-Type: application/json
+
+< ./create-todo.json
+
+###
+# @name basic list todos
+# @auth basic {{basic_username}} {{basic_secret}}
+# @output ./output/basic-todos.json
+GET {{self_signed_base}}/auth/basic/todos
+Accept: application/json
+
+###
+# @name bearer todos
+# @auth bearer token={{bearer_token}}
+GET {{self_signed_base}}/auth/bearer/todos
+Accept: application/json
+
+###
+# @name digest todos
+# @auth digest {{digest_username}} {{digest_secret}}
+GET {{self_signed_base}}/auth/digest/todos
+Accept: application/json
+
+###
+# @name azuread todos
+# @auth azuread tenant_id={{azure_tenant}} client_id={{azure_client_id}} client_secret={{azure_client_secret}} scope={{azure_scope}} token_url={{self_signed_base}}/oauth2/v2.0/token
+GET {{self_signed_base}}/auth/azure/todos
+Accept: application/json
+
+###
+# @name ca-signed health
+# @ca-cert {{demo_ca_cert}}
+GET {{ca_base}}/public/health
+Accept: application/json
+
+###
+# @name mtls todos
+# @auth mtls cert={{mtls_client_cert}} key={{mtls_client_key}} ca={{demo_ca_cert}}
+GET {{mtls_base}}/auth/mtls/todos
+Accept: application/json
