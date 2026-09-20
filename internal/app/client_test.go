@@ -789,6 +789,21 @@ func TestBuildTransportSupportsHTTP2Proxy(t *testing.T) {
 	}
 }
 
+func TestBuildTransportRejectsHTTPSHTTP2Proxy(t *testing.T) {
+	t.Parallel()
+
+	_, _, err := buildTransport(resolvedRequest{
+		RequestSpec: RequestSpec{
+			URL:         "https://example.com",
+			HTTPVersion: "2",
+			Proxy:       "https://proxy.local:8443",
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "not supported") {
+		t.Fatalf("expected https:// proxy to be rejected for HTTP/2, got %v", err)
+	}
+}
+
 func TestExecuteRequestHTTP2ThroughProxySucceeds(t *testing.T) {
 	t.Parallel()
 
@@ -926,6 +941,87 @@ func TestGetAzureTokenRequiresTenantIDForBuiltinEndpoint(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "tenant_id") {
 		t.Fatalf("expected tenant_id requirement error, got %v", err)
+	}
+}
+
+func TestGetAzureTokenRejectsTokenEndpointRedirect(t *testing.T) {
+	t.Parallel()
+
+	var redirectTargetHit bool
+	tokenServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/redirected" {
+			redirectTargetHit = true
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"access_token":"token-value"}`))
+			return
+		}
+		w.Header().Set("Location", "/redirected")
+		w.WriteHeader(http.StatusTemporaryRedirect)
+	}))
+	defer tokenServer.Close()
+
+	cert := tokenServer.Certificate()
+	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw})
+	certFile := filepath.Join(t.TempDir(), "server.pem")
+	if err := os.WriteFile(certFile, pemBytes, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := getAzureToken(context.Background(), resolvedRequest{
+		Timeout:            5 * time.Second,
+		SelfSignedCertFile: certFile,
+		RequestSpec:        RequestSpec{URL: tokenServer.URL},
+		Auth: AuthConfig{
+			Scheme:       "azuread",
+			ClientID:     "client-id",
+			ClientSecret: "client-secret",
+			TokenURL:     tokenServer.URL,
+		},
+	})
+	if err == nil {
+		t.Fatal("expected redirect to be rejected")
+	}
+	if redirectTargetHit {
+		t.Fatal("expected client_secret to never be replayed to the redirect target")
+	}
+}
+
+func TestGetAzureTokenFailureReportsStatusOnlyAndCapsBody(t *testing.T) {
+	t.Parallel()
+
+	large := strings.Repeat("x", 2<<20)
+	tokenServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(large + "client_secret-leak-check"))
+	}))
+	defer tokenServer.Close()
+
+	cert := tokenServer.Certificate()
+	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw})
+	certFile := filepath.Join(t.TempDir(), "server.pem")
+	if err := os.WriteFile(certFile, pemBytes, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := getAzureToken(context.Background(), resolvedRequest{
+		Timeout:            5 * time.Second,
+		SelfSignedCertFile: certFile,
+		RequestSpec:        RequestSpec{URL: tokenServer.URL},
+		Auth: AuthConfig{
+			Scheme:       "azuread",
+			ClientID:     "client-id",
+			ClientSecret: "client-secret",
+			TokenURL:     tokenServer.URL,
+		},
+	})
+	if err == nil {
+		t.Fatal("expected failure status to produce an error")
+	}
+	if strings.Contains(err.Error(), "client_secret-leak-check") {
+		t.Fatalf("expected failure body to not be echoed in the error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "403") {
+		t.Fatalf("expected error to report the HTTP status, got %v", err)
 	}
 }
 

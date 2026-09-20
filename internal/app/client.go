@@ -674,6 +674,13 @@ func buildTransport(resolved resolvedRequest) (http.RoundTripper, io.Closer, err
 			if err != nil {
 				return nil, nil, err
 			}
+			// The CONNECT dialer only speaks plain HTTP to the proxy itself
+			// before layering TLS to the target; an https:// proxy would
+			// otherwise be contacted without transport security, exposing
+			// any embedded proxy credentials.
+			if proxyURL.Scheme != "http" {
+				return nil, nil, fmt.Errorf("HTTP/2 proxy scheme %q is not supported; only http:// proxies are supported", proxyURL.Scheme)
+			}
 			transport.DialTLSContext = http2ProxyDialer(proxyURL, tlsConfig)
 			if resolved.Logger != nil {
 				resolved.Logger.Debugf("using strict HTTP/2 transport via proxy %s", safeURL(proxyURL.String()))
@@ -942,6 +949,13 @@ func getAzureToken(ctx context.Context, resolved resolvedRequest) (string, error
 	client := &http.Client{
 		Timeout:   resolved.Timeout,
 		Transport: loggingRoundTripper{base: transport, logger: resolved.Logger},
+		// Fail closed on redirects: Go would otherwise replay this POST
+		// (including the client_secret body) to whatever Location a
+		// compromised or misconfigured token endpoint returns, potentially
+		// forwarding credentials to an unintended host.
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return errors.New("azuread token endpoint returned a redirect, which is not permitted")
+		},
 	}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -949,12 +963,17 @@ func getAzureToken(ctx context.Context, resolved resolvedRequest) (string, error
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	// The token endpoint is user-configurable and therefore untrusted; cap
+	// how much of its response we buffer and never echo response bodies for
+	// failures, since they could otherwise be used to exhaust memory or leak
+	// credentials into logs.
+	const maxTokenResponseSize = 1 << 20
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxTokenResponseSize))
 	if err != nil {
 		return "", err
 	}
 	if resp.StatusCode >= 300 {
-		return "", fmt.Errorf("azuread token request failed: %s", strings.TrimSpace(string(body)))
+		return "", fmt.Errorf("azuread token request failed with status %s", resp.Status)
 	}
 
 	payload := struct {
