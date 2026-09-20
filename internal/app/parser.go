@@ -53,17 +53,6 @@ func parseHTTPFile(path string) (HTTPFile, error) {
 		result.Requests = append(result.Requests, spec)
 	}
 
-	for i := range result.Requests {
-		for key, value := range result.FileVars {
-			if result.Requests[i].FileVars == nil {
-				result.Requests[i].FileVars = map[string]string{}
-			}
-			if _, exists := result.Requests[i].FileVars[key]; !exists {
-				result.Requests[i].FileVars[key] = value
-			}
-		}
-	}
-
 	return result, nil
 }
 
@@ -155,7 +144,7 @@ func parseSection(section, sourcePath string) (RequestSpec, map[string]string, b
 	}
 
 	if hasRequest {
-		spec.Body = strings.TrimRight(strings.Join(bodyLines, "\n"), "\n")
+		spec.Body = strings.Join(bodyLines, "\n")
 		if spec.Name == "" {
 			spec.Name = fmt.Sprintf("%s %s", spec.Method, spec.URL)
 		}
@@ -220,20 +209,48 @@ func parseDirective(spec *RequestSpec, line string) {
 	}
 }
 
+var authKVFields = map[string]bool{
+	"username":      true,
+	"password":      true,
+	"token":         true,
+	"cert":          true,
+	"cert_file":     true,
+	"key":           true,
+	"key_file":      true,
+	"ca":            true,
+	"ca_cert_file":  true,
+	"tenant":        true,
+	"tenant_id":     true,
+	"client_id":     true,
+	"client_secret": true,
+	"scope":         true,
+	"resource":      true,
+	"token_url":     true,
+}
+
 func parseAuthDirective(value string) AuthConfig {
 	fields := authFields(value)
 	if len(fields) == 0 {
 		return AuthConfig{}
 	}
 	auth := AuthConfig{Scheme: strings.ToLower(fields[0])}
+
 	kv := map[string]string{}
+	positional := make([]string, 0, len(fields)-1)
 	for _, field := range fields[1:] {
-		if parts := strings.SplitN(field, "=", 2); len(parts) == 2 {
-			kv[strings.ToLower(parts[0])] = parts[1]
+		if idx := strings.Index(field, "="); idx > 0 && authKVFields[strings.ToLower(field[:idx])] {
+			kv[strings.ToLower(field[:idx])] = field[idx+1:]
+			continue
 		}
+		positional = append(positional, field)
 	}
-	if auth.Scheme == "bearer" && len(fields) > 1 && !strings.Contains(fields[1], "=") {
-		auth.Token = strings.Join(fields[1:], " ")
+
+	if auth.Scheme == "bearer" {
+		if token, ok := kv["token"]; ok {
+			auth.Token = token
+		} else {
+			auth.Token = strings.Join(fields[1:], " ")
+		}
 		return auth
 	}
 
@@ -286,23 +303,15 @@ func parseAuthDirective(value string) AuthConfig {
 		auth.TokenURL = tokenURL
 	}
 
-	positional := make([]string, 0, len(fields)-1)
-	for _, field := range fields[1:] {
-		if strings.Contains(field, "=") {
-			continue
-		}
-		positional = append(positional, field)
+	// Consume remaining positional values in order: username first, then password.
+	pos := 0
+	if auth.Username == "" && pos < len(positional) {
+		auth.Username = positional[pos]
+		pos++
 	}
-	if auth.Scheme != "bearer" && len(positional) > 0 && auth.Username == "" {
-		auth.Username = positional[0]
-	}
-	if auth.Scheme != "bearer" && auth.Password == "" {
-		switch {
-		case auth.Username != "" && len(positional) > 0:
-			auth.Password = positional[len(positional)-1]
-		case len(positional) > 1:
-			auth.Password = positional[1]
-		}
+	if auth.Password == "" && pos < len(positional) {
+		auth.Password = positional[pos]
+		pos++
 	}
 
 	return auth

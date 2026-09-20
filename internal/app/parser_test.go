@@ -48,6 +48,44 @@ func TestParseHTTPFileMultipleRequests(t *testing.T) {
 	if parsed.Requests[1].FileVars["username"] != "alice" {
 		t.Fatalf("expected section variable to be preserved")
 	}
+	if _, ok := parsed.Requests[0].FileVars["host"]; ok {
+		t.Fatalf("expected shared file variable to stay out of request-local FileVars")
+	}
+	if _, ok := parsed.Requests[1].FileVars["host"]; ok {
+		t.Fatalf("expected shared file variable to stay out of request-local FileVars")
+	}
+}
+
+func TestParseSectionPreservesInlineBodyTrailingNewline(t *testing.T) {
+	t.Parallel()
+
+	section := "POST https://example.com\nContent-Type: text/plain\n\nline1\nline2\n"
+	spec, _, hasRequest, err := parseSection(section, "test.http")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasRequest {
+		t.Fatal("expected request to be parsed")
+	}
+	if spec.Body != "line1\nline2\n" {
+		t.Fatalf("expected trailing newline to be preserved, got %q", spec.Body)
+	}
+}
+
+func TestParseSectionWithoutTrailingBlankLineHasNoTrailingNewline(t *testing.T) {
+	t.Parallel()
+
+	section := "POST https://example.com\nContent-Type: text/plain\n\nline1\nline2"
+	spec, _, hasRequest, err := parseSection(section, "test.http")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasRequest {
+		t.Fatal("expected request to be parsed")
+	}
+	if spec.Body != "line1\nline2" {
+		t.Fatalf("expected no trailing newline, got %q", spec.Body)
+	}
 }
 
 func TestParseAuthDirectivePreservesPositionalPassword(t *testing.T) {
@@ -59,6 +97,39 @@ func TestParseAuthDirectivePreservesPositionalPassword(t *testing.T) {
 	}
 	if auth.Password != "secret" {
 		t.Fatalf("expected password secret, got %q", auth.Password)
+	}
+}
+
+func TestParseAuthDirectiveBearerTokenWithEqualsPadding(t *testing.T) {
+	t.Parallel()
+
+	auth := parseAuthDirective("bearer abc=")
+	if auth.Token != "abc=" {
+		t.Fatalf("expected raw token 'abc=', got %q", auth.Token)
+	}
+}
+
+func TestParseAuthDirectivePositionalOnlyUsername(t *testing.T) {
+	t.Parallel()
+
+	auth := parseAuthDirective("basic alice")
+	if auth.Username != "alice" {
+		t.Fatalf("expected username alice, got %q", auth.Username)
+	}
+	if auth.Password != "" {
+		t.Fatalf("expected empty password, got %q", auth.Password)
+	}
+}
+
+func TestParseAuthDirectivePositionalPasswordWithEquals(t *testing.T) {
+	t.Parallel()
+
+	auth := parseAuthDirective("basic alice abc=def")
+	if auth.Username != "alice" {
+		t.Fatalf("expected username alice, got %q", auth.Username)
+	}
+	if auth.Password != "abc=def" {
+		t.Fatalf("expected password 'abc=def', got %q", auth.Password)
 	}
 }
 

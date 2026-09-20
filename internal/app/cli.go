@@ -296,6 +296,9 @@ func run(ctx context.Context, options RunOptions, stdout, stderr io.Writer) erro
 
 func selectRequests(requests []RequestSpec, options RunOptions) ([]RequestSpec, error) {
 	if options.All {
+		if len(options.Indices) > 0 || len(options.Names) > 0 {
+			return nil, errors.New("--all cannot be combined with --index or --name")
+		}
 		return requests, nil
 	}
 
@@ -381,7 +384,9 @@ func interactiveSelection(ctx context.Context, requests []RequestSpec, reader *b
 			return nil, false, ctx.Err()
 		case input := <-result:
 			if input.err != nil {
-				return nil, false, input.err
+				if input.err != io.EOF || strings.TrimSpace(input.line) == "" {
+					return nil, false, input.err
+				}
 			}
 			line = input.line
 		}

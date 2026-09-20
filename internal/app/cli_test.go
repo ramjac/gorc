@@ -134,9 +134,11 @@ func TestSelectRequestsPreservesDistinctSelections(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	if len(selected) != 2 || selected[0].Body != "one" || selected[1].Body != "two" {
 		t.Fatalf("expected both requests to be preserved, got %#v", selected)
 	}
+
 }
 
 func TestRunInteractiveLoopsUntilQuit(t *testing.T) {
@@ -170,6 +172,44 @@ func TestRunInteractiveLoopsUntilQuit(t *testing.T) {
 	}
 	if hits != 1 {
 		t.Fatalf("expected exactly one request execution, got %d", hits)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("expected clean quit without stderr, got %q", stderr.String())
+	}
+}
+
+func TestRunInteractiveQuitsOnFinalCommandWithoutTrailingNewline(t *testing.T) {
+	t.Parallel()
+
+	hits := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer server.Close()
+
+	requests := []RequestSpec{{
+		Name:    "once",
+		Method:  http.MethodGet,
+		URL:     server.URL,
+		Headers: http.Header{},
+	}}
+
+	var stdout, stderr strings.Builder
+	// "q" with no trailing newline: ReadString returns it together with io.EOF.
+	err := runInteractive(
+		context.Background(),
+		requests,
+		RuntimeConfig{Config: Config{Vars: map[string]string{}}, FileVars: map[string]string{}, CLIVars: map[string]string{}},
+		&stdout,
+		&stderr,
+		strings.NewReader("q"),
+	)
+	if err != nil {
+		t.Fatalf("expected clean quit on EOF-terminated command, got %v", err)
+	}
+	if hits != 0 {
+		t.Fatalf("expected no request execution, got %d", hits)
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("expected clean quit without stderr, got %q", stderr.String())
@@ -348,4 +388,16 @@ func writeHTTPFile(t *testing.T, content string) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+func TestSelectRequestsRejectsConflictingAllSelectors(t *testing.T) {
+	t.Parallel()
+
+	requests := []RequestSpec{{Name: "one"}, {Name: "two"}}
+	if _, err := selectRequests(requests, RunOptions{All: true, Names: []string{"missing"}}); err == nil {
+		t.Fatal("expected --all and --name conflict to be rejected")
+	}
+	if _, err := selectRequests(requests, RunOptions{All: true, Indices: []int{1}}); err == nil {
+		t.Fatal("expected --all and --index conflict to be rejected")
+	}
 }

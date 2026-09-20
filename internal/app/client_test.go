@@ -1,10 +1,12 @@
 package app
 
 import (
+	"bufio"
 	"context"
 	"encoding/base64"
 	"encoding/pem"
 	"io"
+	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
@@ -14,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/net/http2"
 	"software.sslmate.com/src/go-pkcs12"
 )
 
@@ -228,6 +231,75 @@ func TestResolveRequestRequestOverridesConfigAndExpandsAuthPaths(t *testing.T) {
 	}
 	if resolved.Auth.CertFile != filepath.Join(dir, "client.pem") || resolved.Auth.KeyFile != filepath.Join(dir, "client.key") {
 		t.Fatalf("expected auth paths to expand, got cert=%q key=%q", resolved.Auth.CertFile, resolved.Auth.KeyFile)
+	}
+}
+
+func TestResolveRequestAuthCACertOverridesConfigDefault(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	runtime := RuntimeConfig{
+		RootDir:  dir,
+		FileVars: map[string]string{},
+		CLIVars:  map[string]string{},
+		Config: Config{
+			Vars:       map[string]string{},
+			CACertFile: "config-ca.pem",
+		},
+	}
+
+	resolved, err := resolveRequest(RequestSpec{
+		Name:    "test",
+		Method:  http.MethodGet,
+		URL:     "https://example.com",
+		Headers: http.Header{},
+		Auth:    AuthConfig{Scheme: "bearer", Token: "tok", CACertFile: "auth-ca.pem"},
+	}, runtime, resolver{
+		RequestVars: map[string]string{},
+		FileVars:    runtime.FileVars,
+		ConfigVars:  runtime.Config.Vars,
+		CLIVars:     runtime.CLIVars,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.CACertFile != filepath.Join(dir, "auth-ca.pem") {
+		t.Fatalf("expected auth-level CA to override config default, got %q", resolved.CACertFile)
+	}
+}
+
+func TestResolveRequestExplicitCACertDirectiveOverridesAuthCA(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	runtime := RuntimeConfig{
+		RootDir:  dir,
+		FileVars: map[string]string{},
+		CLIVars:  map[string]string{},
+		Config: Config{
+			Vars:       map[string]string{},
+			CACertFile: "config-ca.pem",
+		},
+	}
+
+	resolved, err := resolveRequest(RequestSpec{
+		Name:       "test",
+		Method:     http.MethodGet,
+		URL:        "https://example.com",
+		Headers:    http.Header{},
+		CACertFile: "request-ca.pem",
+		Auth:       AuthConfig{Scheme: "bearer", Token: "tok", CACertFile: "auth-ca.pem"},
+	}, runtime, resolver{
+		RequestVars: map[string]string{},
+		FileVars:    runtime.FileVars,
+		ConfigVars:  runtime.Config.Vars,
+		CLIVars:     runtime.CLIVars,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.CACertFile != filepath.Join(dir, "request-ca.pem") {
+		t.Fatalf("expected explicit request CA directive to win, got %q", resolved.CACertFile)
 	}
 }
 
@@ -611,7 +683,7 @@ func TestExecuteRequestRejectsUnknownAuthScheme(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	defer server.Close()
 
-	_, _, _, err := executeRequest(context.Background(), executionPlan{
+	_, err := executeRequest(context.Background(), executionPlan{
 		Request: RequestSpec{
 			Name:    "bad auth",
 			Method:  http.MethodGet,
@@ -632,7 +704,7 @@ func TestExecuteRequestRejectsHTTP2OnHTTPURL(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	defer server.Close()
 
-	_, _, _, err := executeRequest(context.Background(), executionPlan{
+	_, err := executeRequest(context.Background(), executionPlan{
 		Request: RequestSpec{
 			Name:        "http2 over http",
 			Method:      http.MethodGet,
@@ -647,18 +719,109 @@ func TestExecuteRequestRejectsHTTP2OnHTTPURL(t *testing.T) {
 	}
 }
 
-func TestBuildTransportRejectsHTTP2Proxy(t *testing.T) {
+func TestBuildTransportSupportsHTTP2Proxy(t *testing.T) {
 	t.Parallel()
 
-	_, _, err := buildTransport(resolvedRequest{
+	transport, closer, err := buildTransport(resolvedRequest{
 		RequestSpec: RequestSpec{
 			URL:         "https://example.com",
 			HTTPVersion: "2",
 			Proxy:       "http://proxy.local:8080",
 		},
 	})
-	if err == nil || !strings.Contains(err.Error(), "HTTP/2 proxy support is not available") {
-		t.Fatalf("expected strict HTTP/2 proxy error, got %v", err)
+	if err != nil {
+		t.Fatalf("expected HTTP/2 proxy support, got error: %v", err)
+	}
+	if closer != nil {
+		t.Fatalf("expected no closer for HTTP/2 transport")
+	}
+	http2Transport, ok := transport.(*http2.Transport)
+	if !ok {
+		t.Fatalf("expected *http2.Transport, got %T", transport)
+	}
+	if http2Transport.DialTLSContext == nil {
+		t.Fatalf("expected proxy-aware DialTLSContext to be configured")
+	}
+}
+
+func TestExecuteRequestHTTP2ThroughProxySucceeds(t *testing.T) {
+	t.Parallel()
+
+	target := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.ProtoMajor != 2 {
+			t.Errorf("expected HTTP/2 request, got proto %s", r.Proto)
+		}
+		_, _ = w.Write([]byte("hello-h2"))
+	}))
+	target.EnableHTTP2 = true
+	target.StartTLS()
+	defer target.Close()
+
+	proxyListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer proxyListener.Close()
+	go runConnectProxy(t, proxyListener)
+
+	result, err := executeRequest(context.Background(), executionPlan{
+		Request: RequestSpec{
+			Name:        "h2-via-proxy",
+			Method:      http.MethodGet,
+			URL:         target.URL,
+			Headers:     http.Header{},
+			HTTPVersion: "2",
+			Proxy:       "http://" + proxyListener.Addr().String(),
+			Insecure:    true,
+			InsecureSet: true,
+		},
+		Runtime: RuntimeConfig{Config: Config{Vars: map[string]string{}}, FileVars: map[string]string{}, CLIVars: map[string]string{}},
+	})
+	if err != nil {
+		t.Fatalf("expected request through HTTP/2 proxy to succeed, got %v", err)
+	}
+	if string(result.body) != "hello-h2" {
+		t.Fatalf("unexpected body: %q", result.body)
+	}
+}
+
+// runConnectProxy is a minimal CONNECT tunneling proxy used to verify that
+// the HTTP/2 transport can reach a target through an HTTP proxy.
+func runConnectProxy(t *testing.T, listener net.Listener) {
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		go func(conn net.Conn) {
+			defer conn.Close()
+			reader := bufio.NewReader(conn)
+			req, err := http.ReadRequest(reader)
+			if err != nil {
+				return
+			}
+			if req.Method != http.MethodConnect {
+				return
+			}
+			target, err := net.Dial("tcp", req.Host)
+			if err != nil {
+				return
+			}
+			defer target.Close()
+			if _, err := conn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n")); err != nil {
+				return
+			}
+			done := make(chan struct{}, 2)
+			go func() {
+				_, _ = io.Copy(target, reader)
+				done <- struct{}{}
+			}()
+			go func() {
+				_, _ = io.Copy(conn, target)
+				done <- struct{}{}
+			}()
+			<-done
+		}(conn)
 	}
 }
 

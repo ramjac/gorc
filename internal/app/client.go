@@ -1,16 +1,19 @@
 package app
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"mime"
+	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptrace"
@@ -51,9 +54,9 @@ func executeRequests(ctx context.Context, plans []executionPlan, stdout io.Write
 	}
 
 	for i, plan := range plans {
-		resp, body, outputFile, err := executeRequest(ctx, plan)
+		result, err := executeRequest(ctx, plan)
 		if err != nil {
-			plan.Runtime.Logger.Errorf("request %q failed: %v", safeRequestLabel(plan.Request.Name, plan.Request.URL), err)
+			plan.Runtime.Logger.Errorf("request %q failed: %v", safeRequestLabel(plan.Request.Name, plan.Request.URL), sanitizeError(err, plan.Request.URL))
 			return err
 		}
 		if i > 0 {
@@ -61,7 +64,10 @@ func executeRequests(ctx context.Context, plans []executionPlan, stdout io.Write
 				return err
 			}
 		}
-		if err := writeResponse(stdout, plan.Request, resp, body, outputFile, plan.Runtime.Colorizer); err != nil {
+		if err := writeResponse(stdout, plan.Request, result.resp, result.body, result.outputFile, plan.Runtime.Colorizer, responseMetadata{
+			totalBytes:       result.totalBytes,
+			previewTruncated: result.previewTruncated,
+		}); err != nil {
 			return err
 		}
 	}
@@ -69,7 +75,15 @@ func executeRequests(ctx context.Context, plans []executionPlan, stdout io.Write
 	return nil
 }
 
-func executeRequest(ctx context.Context, plan executionPlan) (*http.Response, []byte, string, error) {
+type responseResult struct {
+	resp             *http.Response
+	body             []byte
+	outputFile       string
+	totalBytes       int
+	previewTruncated bool
+}
+
+func executeRequest(ctx context.Context, plan executionPlan) (responseResult, error) {
 	reqSpec := plan.Request
 	runtime := plan.Runtime
 	logger := runtime.Logger
@@ -83,14 +97,14 @@ func executeRequest(ctx context.Context, plan executionPlan) (*http.Response, []
 
 	resolved, err := resolveRequest(reqSpec, runtime, resolver)
 	if err != nil {
-		return nil, nil, "", err
+		return responseResult{}, err
 	}
 	logger.Infof("executing request %q", safeRequestLabel(resolved.Name, resolved.URL))
 	logger.Debugf("resolved request method=%s url=%s http_version=%s", resolved.Method, safeURL(resolved.URL), resolved.HTTPVersion)
 
 	bodyBytes, err := buildBody(resolved)
 	if err != nil {
-		return nil, nil, resolved.OutputFile, err
+		return responseResult{outputFile: resolved.OutputFile}, err
 	}
 	if len(bodyBytes) > 0 {
 		logger.Debugf("prepared request body bytes=%d", len(bodyBytes))
@@ -98,7 +112,7 @@ func executeRequest(ctx context.Context, plan executionPlan) (*http.Response, []
 
 	request, err := http.NewRequestWithContext(ctx, resolved.Method, resolved.URL, bytes.NewReader(bodyBytes))
 	if err != nil {
-		return nil, nil, resolved.OutputFile, err
+		return responseResult{outputFile: resolved.OutputFile}, err
 	}
 	request.GetBody = func() (io.ReadCloser, error) {
 		return io.NopCloser(bytes.NewReader(bodyBytes)), nil
@@ -118,10 +132,13 @@ func executeRequest(ctx context.Context, plan executionPlan) (*http.Response, []
 
 	transport, closer, err := buildTransport(resolved)
 	if err != nil {
-		return nil, nil, resolved.OutputFile, err
+		return responseResult{outputFile: resolved.OutputFile}, err
 	}
 	if closer != nil {
 		defer closer.Close()
+	}
+	if idleCloser, ok := transport.(interface{ CloseIdleConnections() }); ok {
+		defer idleCloser.CloseIdleConnections()
 	}
 
 	var roundTripper http.RoundTripper = loggingRoundTripper{base: transport, logger: logger}
@@ -148,14 +165,14 @@ func executeRequest(ctx context.Context, plan executionPlan) (*http.Response, []
 		logger.Debugf("requesting Azure AD access token")
 		token, err := getAzureToken(ctx, resolved)
 		if err != nil {
-			return nil, nil, resolved.OutputFile, err
+			return responseResult{outputFile: resolved.OutputFile}, err
 		}
 		request.Header.Set("Authorization", "Bearer "+token)
 	case "":
 	case "mtls":
 		logger.Debugf("using mTLS client certificate authentication")
 	default:
-		return nil, nil, resolved.OutputFile, fmt.Errorf("unsupported auth scheme %q", resolved.Auth.Scheme)
+		return responseResult{outputFile: resolved.OutputFile}, fmt.Errorf("unsupported auth scheme %q", resolved.Auth.Scheme)
 	}
 
 	client := &http.Client{
@@ -167,8 +184,9 @@ func executeRequest(ctx context.Context, plan executionPlan) (*http.Response, []
 	started := time.Now()
 	resp, err := client.Do(request)
 	if err != nil {
+		err = sanitizeError(err, resolved.URL)
 		logger.Errorf("request %q transport error: %v", safeRequestLabel(resolved.Name, resolved.URL), err)
-		return nil, nil, resolved.OutputFile, err
+		return responseResult{outputFile: resolved.OutputFile}, err
 	}
 	defer resp.Body.Close()
 
@@ -177,20 +195,20 @@ func executeRequest(ctx context.Context, plan executionPlan) (*http.Response, []
 		if outputFiles == nil {
 			outputFiles = newOutputFileState()
 		}
-		body, err := outputFiles.writeFromReader(resolved.OutputFile, resp.Body)
+		body, totalBytes, truncated, err := outputFiles.writeFromReader(resolved.OutputFile, resp.Body)
 		if err != nil {
-			return nil, nil, resolved.OutputFile, err
+			return responseResult{outputFile: resolved.OutputFile}, err
 		}
 		logger.Debugf("wrote response body to %s", resolved.OutputFile)
 		logger.Infof("request %q completed with status=%s duration=%s", safeRequestLabel(resolved.Name, resolved.URL), resp.Status, time.Since(started).Round(time.Microsecond))
-		return resp, body, resolved.OutputFile, nil
+		return responseResult{resp: resp, body: body, outputFile: resolved.OutputFile, totalBytes: totalBytes, previewTruncated: truncated}, nil
 	}
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, nil, resolved.OutputFile, err
+		return responseResult{outputFile: resolved.OutputFile}, err
 	}
 	logger.Infof("request %q completed with status=%s duration=%s", safeRequestLabel(resolved.Name, resolved.URL), resp.Status, time.Since(started).Round(time.Microsecond))
-	return resp, body, resolved.OutputFile, nil
+	return responseResult{resp: resp, body: body, outputFile: resolved.OutputFile, totalBytes: len(body)}, nil
 }
 
 type outputFileState struct {
@@ -226,9 +244,9 @@ func (s *outputFileState) write(path string, body []byte) error {
 
 const maxResponsePreviewSize = 1 << 20
 
-func (s *outputFileState) writeFromReader(path string, reader io.Reader) ([]byte, error) {
+func (s *outputFileState) writeFromReader(path string, reader io.Reader) ([]byte, int, bool, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return nil, err
+		return nil, 0, false, err
 	}
 	flags := os.O_CREATE | os.O_WRONLY | os.O_TRUNC
 	if _, ok := s.initialized[path]; ok {
@@ -236,19 +254,19 @@ func (s *outputFileState) writeFromReader(path string, reader io.Reader) ([]byte
 	}
 	file, err := os.OpenFile(path, flags, 0o644)
 	if err != nil {
-		return nil, err
+		return nil, 0, false, err
 	}
 	preview := &previewWriter{limit: maxResponsePreviewSize}
-	_, copyErr := io.Copy(io.MultiWriter(file, preview), reader)
+	totalBytes, copyErr := io.Copy(io.MultiWriter(file, preview), reader)
 	closeErr := file.Close()
 	if copyErr != nil {
-		return nil, copyErr
+		return nil, int(totalBytes), false, copyErr
 	}
 	if closeErr != nil {
-		return nil, closeErr
+		return nil, int(totalBytes), false, closeErr
 	}
 	s.initialized[path] = struct{}{}
-	return preview.Bytes(), nil
+	return preview.Bytes(), int(totalBytes), int(totalBytes) > len(preview.Bytes()), nil
 }
 
 type previewWriter struct {
@@ -322,9 +340,6 @@ func resolveRequest(spec RequestSpec, runtime RuntimeConfig, vars resolver) (res
 	if err != nil {
 		return resolved, err
 	}
-	if resolved.CACertFile, err = chooseResolvedPath(runtime.RootDir, spec.CACertFile, runtime.Config.CACertFile, vars); err != nil {
-		return resolved, err
-	}
 	if resolved.SelfSignedCertFile, err = chooseResolvedPath(runtime.RootDir, runtime.SelfSignedCertFile, spec.SelfSignedCertFile, runtime.Config.SelfSignedCertFile, vars); err != nil {
 		return resolved, err
 	}
@@ -334,9 +349,11 @@ func resolveRequest(spec RequestSpec, runtime RuntimeConfig, vars resolver) (res
 			return resolved, err
 		}
 		resolved.Auth.CACertFile = resolvePath(runtime.RootDir, authCACert)
-		if resolved.CACertFile == "" {
-			resolved.CACertFile = resolved.Auth.CACertFile
-		}
+	}
+	// An explicit request-level `# @ca-cert` directive always wins; otherwise
+	// an auth-level CA overrides the global config default.
+	if resolved.CACertFile, err = chooseResolvedPath(runtime.RootDir, spec.CACertFile, resolved.Auth.CACertFile, runtime.Config.CACertFile, vars); err != nil {
+		return resolved, err
 	}
 	resolved.Insecure = runtime.Config.Insecure || runtime.Insecure
 	if spec.InsecureSet {
@@ -393,15 +410,6 @@ func resolveRequest(spec RequestSpec, runtime RuntimeConfig, vars resolver) (res
 			return resolved, err
 		}
 		resolved.Auth.KeyFile = resolvePath(runtime.RootDir, resolved.Auth.KeyFile)
-	}
-	if resolved.Auth.CACertFile != "" {
-		if resolved.Auth.CACertFile, err = resolveString(resolved.Auth.CACertFile, vars); err != nil {
-			return resolved, err
-		}
-		resolved.Auth.CACertFile = resolvePath(runtime.RootDir, resolved.Auth.CACertFile)
-		if resolved.CACertFile == "" {
-			resolved.CACertFile = resolved.Auth.CACertFile
-		}
 	}
 	if resolved.Auth.CertFile == "" {
 		resolved.Auth.CertFile = resolved.CertFile
@@ -590,6 +598,17 @@ func safeRequestLabel(name, rawURL string) string {
 	return name
 }
 
+func sanitizeError(err error, rawURL string) error {
+	if err == nil {
+		return nil
+	}
+	message := strings.ReplaceAll(err.Error(), rawURL, safeURL(rawURL))
+	if message == err.Error() {
+		return err
+	}
+	return fmt.Errorf("%s: %w", message, err)
+}
+
 func buildTransport(resolved resolvedRequest) (http.RoundTripper, io.Closer, error) {
 	if resolved.Logger != nil {
 		resolved.Logger.Debugf("building transport http_version=%s proxy=%q insecure=%t", resolved.HTTPVersion, resolved.Proxy, resolved.Insecure)
@@ -612,20 +631,27 @@ func buildTransport(resolved resolvedRequest) (http.RoundTripper, io.Closer, err
 		return transport, transport, nil
 	}
 	if resolved.HTTPVersion == "2" {
-		if resolved.Proxy != "" {
-			return nil, nil, errors.New("HTTP/2 proxy support is not available")
-		}
 		if strings.TrimSpace(resolved.URL) != "" {
 			if parsedURL, err := url.Parse(resolved.URL); err == nil && parsedURL.Scheme != "https" {
 				return nil, nil, errors.New("HTTP/2 requires an https URL")
 			}
 		}
-		if resolved.Logger != nil {
+		transport := &http2.Transport{
+			TLSClientConfig: tlsConfig,
+		}
+		if resolved.Proxy != "" {
+			proxyURL, err := url.Parse(resolved.Proxy)
+			if err != nil {
+				return nil, nil, err
+			}
+			transport.DialTLSContext = http2ProxyDialer(proxyURL, tlsConfig)
+			if resolved.Logger != nil {
+				resolved.Logger.Debugf("using strict HTTP/2 transport via proxy %s", safeURL(proxyURL.String()))
+			}
+		} else if resolved.Logger != nil {
 			resolved.Logger.Debugf("using strict HTTP/2 transport")
 		}
-		return &http2.Transport{
-			TLSClientConfig: tlsConfig,
-		}, nil, nil
+		return transport, nil, nil
 	}
 
 	transport := &http.Transport{
@@ -650,6 +676,63 @@ func buildTransport(resolved resolvedRequest) (http.RoundTripper, io.Closer, err
 		}
 	}
 	return transport, nil, nil
+}
+
+// http2ProxyDialer returns a DialTLSContext that tunnels an HTTP/2 TLS
+// connection through an HTTP proxy using the CONNECT method, since
+// golang.org/x/net/http2.Transport has no built-in proxy support.
+func http2ProxyDialer(proxyURL *url.URL, cfg *tls.Config) func(ctx context.Context, network, addr string, tlsCfg *tls.Config) (net.Conn, error) {
+	return func(ctx context.Context, network, addr string, tlsCfg *tls.Config) (net.Conn, error) {
+		var dialer net.Dialer
+		conn, err := dialer.DialContext(ctx, network, proxyURL.Host)
+		if err != nil {
+			return nil, err
+		}
+		connectReq := &http.Request{
+			Method: http.MethodConnect,
+			URL:    &url.URL{Opaque: addr},
+			Host:   addr,
+			Header: make(http.Header),
+		}
+		if proxyURL.User != nil {
+			if password, ok := proxyURL.User.Password(); ok {
+				creds := base64.StdEncoding.EncodeToString([]byte(proxyURL.User.Username() + ":" + password))
+				connectReq.Header.Set("Proxy-Authorization", "Basic "+creds)
+			}
+		}
+		if err := connectReq.Write(conn); err != nil {
+			conn.Close()
+			return nil, err
+		}
+		reader := bufio.NewReader(conn)
+		resp, err := http.ReadResponse(reader, connectReq)
+		if err != nil {
+			conn.Close()
+			return nil, err
+		}
+		if resp.StatusCode != http.StatusOK {
+			conn.Close()
+			return nil, fmt.Errorf("proxy CONNECT to %s failed: %s", addr, resp.Status)
+		}
+		buffered := &bufferedConn{Conn: conn, reader: reader}
+		tlsConn := tls.Client(buffered, tlsCfg)
+		if err := tlsConn.HandshakeContext(ctx); err != nil {
+			tlsConn.Close()
+			return nil, err
+		}
+		return tlsConn, nil
+	}
+}
+
+// bufferedConn preserves any bytes the proxy already sent past the CONNECT
+// response headers so they aren't dropped by the subsequent TLS handshake.
+type bufferedConn struct {
+	net.Conn
+	reader *bufio.Reader
+}
+
+func (c *bufferedConn) Read(p []byte) (int, error) {
+	return c.reader.Read(p)
 }
 
 func buildTLSConfig(resolved resolvedRequest) (*tls.Config, error) {
@@ -906,7 +989,12 @@ func withTrace(req *http.Request, logger *Logger) *http.Request {
 	return req.WithContext(httptrace.WithClientTrace(req.Context(), trace))
 }
 
-func writeResponse(w io.Writer, req RequestSpec, resp *http.Response, body []byte, outputFile string, colorizer *Colorizer) error {
+type responseMetadata struct {
+	totalBytes       int
+	previewTruncated bool
+}
+
+func writeResponse(w io.Writer, req RequestSpec, resp *http.Response, body []byte, outputFile string, colorizer *Colorizer, metadata ...responseMetadata) error {
 	if resp == nil {
 		return errors.New("response is required")
 	}
@@ -930,6 +1018,13 @@ func writeResponse(w io.Writer, req RequestSpec, resp *http.Response, body []byt
 	if len(body) == 0 {
 		return nil
 	}
+	var info responseMetadata
+	if len(metadata) > 0 {
+		info = metadata[0]
+	}
+	if info.totalBytes == 0 {
+		info.totalBytes = len(body)
+	}
 	mediaType, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type"))
 	isJSON := strings.HasSuffix(mediaType, "+json") || mediaType == "application/json"
 	if isJSON {
@@ -949,13 +1044,16 @@ func writeResponse(w io.Writer, req RequestSpec, resp *http.Response, body []byt
 	}
 	if strings.HasPrefix(mediaType, "text/") || isJSON || strings.HasSuffix(mediaType, "+xml") || mediaType == "application/xml" || mediaType == "" {
 		_, err := fmt.Fprintln(w, string(body))
+		if err == nil && info.previewTruncated {
+			_, err = fmt.Fprintf(w, "%s\n", colorizer.Meta("response preview truncated at %d bytes; full body saved to %s (bytes=%d)", len(body), outputFile, info.totalBytes))
+		}
 		return err
 	}
 	contentType := resp.Header.Get("Content-Type")
 	if outputFile != "" {
-		_, err := fmt.Fprintf(w, "%s\n", colorizer.Meta("binary body saved to %s; omitted from stdout (content-type=%s, bytes=%d)", outputFile, contentType, len(body)))
+		_, err := fmt.Fprintf(w, "%s\n", colorizer.Meta("binary body saved to %s; omitted from stdout (content-type=%s, bytes=%d)", outputFile, contentType, info.totalBytes))
 		return err
 	}
-	_, err := fmt.Fprintf(w, "%s\n", colorizer.Meta("binary body omitted from stdout (content-type=%s, bytes=%d); use --output to save it", contentType, len(body)))
+	_, err := fmt.Fprintf(w, "%s\n", colorizer.Meta("binary body omitted from stdout (content-type=%s, bytes=%d); use --output to save it", contentType, info.totalBytes))
 	return err
 }
