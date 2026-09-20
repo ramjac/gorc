@@ -878,6 +878,35 @@ func TestBuildTransportRejectsHTTPSHTTP2Proxy(t *testing.T) {
 	}
 }
 
+func TestBuildTransportSanitizesInvalidProxyURLError(t *testing.T) {
+	t.Parallel()
+
+	// An invalid percent-encoding makes url.Parse fail while embedding the
+	// raw (credential-bearing) proxy URL verbatim in its error message.
+	badProxy := "http://user:sup3rsecret@proxy.local:80/%zz"
+
+	for _, httpVersion := range []string{"", "2"} {
+		httpVersion := httpVersion
+		t.Run(fmt.Sprintf("httpVersion=%q", httpVersion), func(t *testing.T) {
+			t.Parallel()
+
+			_, _, err := buildTransport(resolvedRequest{
+				RequestSpec: RequestSpec{
+					URL:         "https://example.com",
+					HTTPVersion: httpVersion,
+					Proxy:       badProxy,
+				},
+			})
+			if err == nil {
+				t.Fatal("expected an error for an invalid proxy URL")
+			}
+			if strings.Contains(err.Error(), "sup3rsecret") {
+				t.Fatalf("expected sanitized proxy parse error, got %v", err)
+			}
+		})
+	}
+}
+
 func TestExecuteRequestHTTP2ThroughProxySucceeds(t *testing.T) {
 	t.Parallel()
 
@@ -1183,5 +1212,42 @@ func TestBuildTLSConfigLoadsPasswordProtectedPKCS12Certificate(t *testing.T) {
 	}
 	if !tlsConfig.Certificates[0].Leaf.Equal(serverCertificate) {
 		t.Fatal("decoded PKCS#12 leaf certificate does not match")
+	}
+}
+
+func TestBuildTLSConfigOnlyLoadsClientCertificateForMTLSScheme(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	certFile := filepath.Join(dir, "client.pem")
+	keyFile := filepath.Join(dir, "client.key")
+	// Files don't need to be valid certificates for this test: if the
+	// non-mtls scheme is (correctly) not gating cert loading, buildTLSConfig
+	// would fail trying to parse them; if it *is* gating correctly, these
+	// paths are never read at all.
+	if err := os.WriteFile(certFile, []byte("not a real cert"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyFile, []byte("not a real key"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, scheme := range []string{"", "basic", "none"} {
+		scheme := scheme
+		t.Run(fmt.Sprintf("scheme=%q", scheme), func(t *testing.T) {
+			t.Parallel()
+
+			tlsConfig, err := buildTLSConfig(resolvedRequest{
+				CertFile: certFile,
+				KeyFile:  keyFile,
+				Auth:     AuthConfig{Scheme: scheme},
+			})
+			if err != nil {
+				t.Fatalf("expected no error when auth scheme is %q, got %v", scheme, err)
+			}
+			if len(tlsConfig.Certificates) != 0 {
+				t.Fatalf("expected no client certificate to be loaded for auth scheme %q, got %#v", scheme, tlsConfig.Certificates)
+			}
+		})
 	}
 }

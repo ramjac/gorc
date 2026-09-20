@@ -148,7 +148,7 @@ Supported auth directives:
 # @auth none
 ```
 
-The `mtls` authentication scheme accepts either a PEM certificate with a separate key, or a password-protected PKCS#12 `.pfx`/`.p12` certificate. Credentials can be supplied by the request directive or configuration.
+The `mtls` authentication scheme accepts either a PEM certificate with a separate key, or a password-protected PKCS#12 `.pfx`/`.p12` certificate. Credentials can be supplied by the request directive or configuration. A configured client certificate is only ever sent when the effective auth scheme for a request is `mtls`; it is not attached to requests using any other scheme (including `none`).
 
 For `basic`, `digest`, and `ntlm`, include both credentials after the scheme, with the username first. Values can use variables, for example `# @auth basic {{user}} {{secret}}`.
 

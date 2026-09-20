@@ -689,7 +689,7 @@ func buildTransport(resolved resolvedRequest) (http.RoundTripper, io.Closer, err
 		if resolved.Proxy != "" {
 			proxyURL, err := url.Parse(resolved.Proxy)
 			if err != nil {
-				return nil, nil, err
+				return nil, nil, sanitizeError(err, resolved.Proxy)
 			}
 			// The CONNECT dialer only speaks plain HTTP to the proxy itself
 			// before layering TLS to the target; an https:// proxy would
@@ -722,7 +722,7 @@ func buildTransport(resolved resolvedRequest) (http.RoundTripper, io.Closer, err
 	if resolved.Proxy != "" {
 		proxyURL, err := url.Parse(resolved.Proxy)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, sanitizeError(err, resolved.Proxy)
 		}
 		transport.Proxy = http.ProxyURL(proxyURL)
 		if resolved.Logger != nil {
@@ -848,23 +848,28 @@ func buildTLSConfig(resolved resolvedRequest) (*tls.Config, error) {
 		tlsConfig.RootCAs = pool
 	}
 
-	certFile := resolved.Auth.CertFile
-	keyFile := resolved.Auth.KeyFile
-	if certFile == "" {
-		certFile = resolved.CertFile
-	}
-	if keyFile == "" {
-		keyFile = resolved.KeyFile
-	}
-	if certFile != "" || keyFile != "" {
-		if resolved.Logger != nil {
-			resolved.Logger.Debugf("loading client certificate cert=%s", certFile)
+	// Client certificates are only ever appropriate for mTLS; loading them
+	// for any other scheme (including "none") would silently present the
+	// configured client identity to servers using unrelated auth schemes.
+	if strings.EqualFold(resolved.Auth.Scheme, "mtls") {
+		certFile := resolved.Auth.CertFile
+		keyFile := resolved.Auth.KeyFile
+		if certFile == "" {
+			certFile = resolved.CertFile
 		}
-		cert, err := loadClientCertificate(certFile, keyFile, resolved.Auth.Password)
-		if err != nil {
-			return nil, err
+		if keyFile == "" {
+			keyFile = resolved.KeyFile
 		}
-		tlsConfig.Certificates = []tls.Certificate{cert}
+		if certFile != "" || keyFile != "" {
+			if resolved.Logger != nil {
+				resolved.Logger.Debugf("loading client certificate cert=%s", certFile)
+			}
+			cert, err := loadClientCertificate(certFile, keyFile, resolved.Auth.Password)
+			if err != nil {
+				return nil, err
+			}
+			tlsConfig.Certificates = []tls.Certificate{cert}
+		}
 	}
 	return tlsConfig, nil
 }
@@ -1034,7 +1039,7 @@ func (l loggingRoundTripper) RoundTrip(req *http.Request) (*http.Response, error
 	resp, err := l.base.RoundTrip(req)
 	if err != nil {
 		if l.logger != nil {
-			l.logger.Errorf("round trip failed method=%s url=%s err=%v", req.Method, safeURL(req.URL.String()), err)
+			l.logger.Errorf("round trip failed method=%s url=%s err=%v", req.Method, safeURL(req.URL.String()), sanitizeError(err, req.URL.String()))
 		}
 		return nil, err
 	}
