@@ -27,6 +27,7 @@ import (
 	"github.com/icholy/digest"
 	"github.com/quic-go/quic-go/http3"
 	"golang.org/x/net/http2"
+	"golang.org/x/net/publicsuffix"
 	"software.sslmate.com/src/go-pkcs12"
 )
 
@@ -39,7 +40,7 @@ func executeRequests(ctx context.Context, plans []executionPlan, stdout io.Write
 	}
 	if jar == nil {
 		var err error
-		jar, err = cookiejar.New(nil)
+		jar, err = newCookieJar()
 		if err != nil {
 			return err
 		}
@@ -227,6 +228,15 @@ func readCappedBody(reader io.Reader, limit int) ([]byte, int, bool, error) {
 	}
 	totalBytes := len(body) + int(remaining)
 	return body, totalBytes, remaining > 0, nil
+}
+
+// newCookieJar creates the shared cookie jar used across a CLI run. Cookies
+// persist for every request in the run, so the jar must consult the public
+// suffix list; otherwise a response from one host could set a cookie scoped
+// to a public suffix (e.g. "co.uk") that would then be sent to unrelated
+// hosts sharing that suffix later in the same run.
+func newCookieJar() (http.CookieJar, error) {
+	return cookiejar.New(&cookiejar.Options{PublicSuffixList: publicsuffix.List})
 }
 
 type outputFileState struct {
@@ -514,6 +524,13 @@ func mergeAuth(configAuth, cliAuth, requestAuth AuthConfig) AuthConfig {
 func overlayAuth(base, override AuthConfig) AuthConfig {
 	if isEmptyAuth(override) {
 		return base
+	}
+	// An explicit `# @auth none` directive disables any inherited config or
+	// CLI auth default for this request; without it, a request-local
+	// override could never opt out of a configured scheme (an empty
+	// request-level Auth is indistinguishable from "no override").
+	if strings.EqualFold(override.Scheme, "none") {
+		return AuthConfig{}
 	}
 	if override.Scheme != "" && base.Scheme != "" && !strings.EqualFold(override.Scheme, base.Scheme) {
 		base = AuthConfig{}

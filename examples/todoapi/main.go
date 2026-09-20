@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 )
 
 func main() {
@@ -48,17 +49,33 @@ func run() int {
 }
 
 func serveServer(ctx context.Context, srv *http.Server, logger *log.Logger, certFile, keyFile string) error {
+	return serveWithGracefulShutdown(ctx, srv, shutdownTimeout, func() error {
+		logger.Printf("serving %s", srv.Addr)
+		return srv.ListenAndServeTLS(certFile, keyFile)
+	})
+}
+
+// serveWithGracefulShutdown runs serveFunc (which blocks until the server
+// stops) and, on ctx cancellation, attempts a graceful shutdown before
+// force-closing the server if that shutdown doesn't complete within
+// gracePeriod. This keeps a still-active handler from hanging SIGTERM
+// indefinitely.
+func serveWithGracefulShutdown(ctx context.Context, srv *http.Server, gracePeriod time.Duration, serveFunc func() error) error {
 	errCh := make(chan error, 1)
 	go func() {
-		logger.Printf("serving %s", srv.Addr)
-		errCh <- srv.ListenAndServeTLS(certFile, keyFile)
+		errCh <- serveFunc()
 	}()
 
 	select {
 	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), gracePeriod)
 		defer cancel()
-		_ = srv.Shutdown(shutdownCtx)
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			// Graceful shutdown didn't finish within the timeout (e.g. a
+			// handler is still active); force-close so the serve goroutine
+			// unblocks instead of hanging indefinitely on SIGTERM.
+			_ = srv.Close()
+		}
 		err := <-errCh
 		if errors.Is(err, http.ErrServerClosed) {
 			return ctx.Err()

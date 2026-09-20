@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/http/cookiejar"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -253,7 +252,7 @@ func run(ctx context.Context, options RunOptions, stdout, stderr io.Writer) erro
 	if err != nil {
 		return err
 	}
-	jar, err := cookiejar.New(nil)
+	jar, err := newCookieJar()
 	if err != nil {
 		return err
 	}

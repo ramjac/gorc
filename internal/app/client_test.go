@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -211,6 +212,45 @@ func TestMergeAuthRefinesConfiguredScheme(t *testing.T) {
 	}
 	if merged.Scope != "scope-b" {
 		t.Fatalf("expected request scope override, got %#v", merged)
+	}
+}
+
+func TestMergeAuthNoneDisablesInheritedScheme(t *testing.T) {
+	t.Parallel()
+
+	merged := mergeAuth(
+		AuthConfig{Scheme: "basic", Username: "configured-user", Password: "configured-pass"},
+		AuthConfig{},
+		AuthConfig{Scheme: "none"},
+	)
+	if merged != (AuthConfig{}) {
+		t.Fatalf("expected request-level 'none' to fully clear inherited auth, got %#v", merged)
+	}
+}
+
+func TestNewCookieJarRejectsPublicSuffixCookies(t *testing.T) {
+	t.Parallel()
+
+	jar, err := newCookieJar()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// "co.uk" is a public suffix (an ICANN registry suffix, not a
+	// registrable domain on its own), so a jar with a PublicSuffixList must
+	// reject a cookie that tries to scope itself to the entire suffix.
+	u, err := url.Parse("https://example.co.uk")
+	if err != nil {
+		t.Fatal(err)
+	}
+	jar.SetCookies(u, []*http.Cookie{{Name: "session", Value: "leaked", Domain: "co.uk"}})
+
+	other, err := url.Parse("https://unrelated.co.uk")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cookies := jar.Cookies(other); len(cookies) != 0 {
+		t.Fatalf("expected no cookies to leak across unrelated hosts sharing a public suffix, got %#v", cookies)
 	}
 }
 
@@ -719,6 +759,40 @@ func TestResolveRequestInheritsInsecureDefaultsWithoutDirective(t *testing.T) {
 	}
 	if !resolved.Insecure {
 		t.Fatal("expected insecure config default to be inherited")
+	}
+}
+
+func TestExecuteRequestAuthNoneDisablesConfiguredDefault(t *testing.T) {
+	t.Parallel()
+
+	var gotAuth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+	}))
+	defer server.Close()
+
+	_, err := executeRequest(context.Background(), executionPlan{
+		Request: RequestSpec{
+			Name:    "public endpoint",
+			Method:  http.MethodGet,
+			URL:     server.URL,
+			Headers: http.Header{},
+			Auth:    AuthConfig{Scheme: "none"},
+		},
+		Runtime: RuntimeConfig{
+			Config: Config{
+				Vars: map[string]string{},
+				Auth: AuthConfig{Scheme: "basic", Username: "configured-user", Password: "configured-pass"},
+			},
+			FileVars: map[string]string{},
+			CLIVars:  map[string]string{},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotAuth != "" {
+		t.Fatalf("expected no Authorization header to be sent, got %q", gotAuth)
 	}
 }
 
