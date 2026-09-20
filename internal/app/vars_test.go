@@ -1,6 +1,9 @@
 package app
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
 
 func TestResolveStringPrecedence(t *testing.T) {
 	t.Setenv("TEST_GORC_ENV", "env-value")
@@ -53,5 +56,25 @@ func TestResolveStringErrorsOnUnresolvedVariable(t *testing.T) {
 	_, err := resolveString("{{missing}}", resolver{})
 	if err == nil {
 		t.Fatal("expected unresolved variable error")
+	}
+}
+
+func TestResolveStringSucceedsWhenFinalExpansionCompletesOnTenthPass(t *testing.T) {
+	t.Parallel()
+
+	// Build a chain v0 -> v1 -> ... -> v9 -> "final" that requires exactly
+	// 10 replacement passes to fully resolve, exercising the loop's last
+	// iteration rather than returning early on a stable/unchanged pass.
+	vars := map[string]string{"v9": "final"}
+	for i := 0; i < 9; i++ {
+		vars[fmt.Sprintf("v%d", i)] = fmt.Sprintf("{{v%d}}", i+1)
+	}
+
+	got, err := resolveString("{{v0}}", resolver{ConfigVars: vars})
+	if err != nil {
+		t.Fatalf("expected chain to resolve within the recursion limit, got error: %v", err)
+	}
+	if got != "final" {
+		t.Fatalf("expected fully resolved value %q, got %q", "final", got)
 	}
 }

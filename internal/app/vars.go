@@ -36,6 +36,9 @@ func resolveString(input string, vars resolver) (string, error) {
 		}
 		previous = replaced
 	}
+	if !variablePattern.MatchString(previous) {
+		return previous, nil
+	}
 	return previous, fmt.Errorf("variable expansion exceeded recursion limit")
 }
 

@@ -390,6 +390,27 @@ func writeHTTPFile(t *testing.T, content string) string {
 	return path
 }
 
+func TestRunRejectsInteractiveCombinedWithSelectors(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	requestFile := filepath.Join(dir, "requests.http")
+	if err := os.WriteFile(requestFile, []byte("GET https://example.com\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []RunOptions{
+		{FilePath: requestFile, Interactive: true, All: true},
+		{FilePath: requestFile, Interactive: true, Indices: []int{1}},
+		{FilePath: requestFile, Interactive: true, Names: []string{"anything"}},
+	}
+	for _, options := range cases {
+		if err := run(context.Background(), options, io.Discard, io.Discard); err == nil {
+			t.Fatalf("expected conflict error for options %#v", options)
+		}
+	}
+}
+
 func TestSelectRequestsRejectsConflictingAllSelectors(t *testing.T) {
 	t.Parallel()
 

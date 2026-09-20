@@ -137,12 +137,24 @@ func TestParseInsecureDirectiveTracksExplicitFalse(t *testing.T) {
 	t.Parallel()
 
 	spec := RequestSpec{}
-	parseDirective(&spec, "# @insecure false")
+	if err := parseDirective(&spec, "# @insecure false"); err != nil {
+		t.Fatal(err)
+	}
 	if !spec.InsecureSet {
 		t.Fatal("expected insecure directive presence to be tracked")
 	}
 	if spec.Insecure {
 		t.Fatal("expected explicit false insecure directive")
+	}
+}
+
+func TestParseInsecureDirectiveRejectsInvalidValue(t *testing.T) {
+	t.Parallel()
+
+	spec := RequestSpec{}
+	err := parseDirective(&spec, "# @insecure ture")
+	if err == nil {
+		t.Fatal("expected error for invalid @insecure value")
 	}
 }
 

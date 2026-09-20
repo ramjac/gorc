@@ -284,6 +284,9 @@ func run(ctx context.Context, options RunOptions, stdout, stderr io.Writer) erro
 	}
 
 	if options.Interactive {
+		if options.All || len(options.Indices) > 0 || len(options.Names) > 0 {
+			return errors.New("--interactive cannot be combined with --all, --index, or --name")
+		}
 		return runInteractive(ctx, httpFile.Requests, runtime, stdout, stderr, os.Stdin)
 	}
 

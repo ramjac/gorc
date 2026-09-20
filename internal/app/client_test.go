@@ -2,9 +2,12 @@ package app
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/pem"
+	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -150,6 +153,48 @@ func TestExecuteRequestsAppendsBodiesToSharedOutputFile(t *testing.T) {
 	}
 	if got, want := string(data), "firstsecond"; got != want {
 		t.Fatalf("expected response bodies to be appended in order, got %q want %q", got, want)
+	}
+}
+
+func TestExecuteRequestCapsStdoutBodyPreviewForLargeBinaryResponse(t *testing.T) {
+	t.Parallel()
+
+	large := bytes.Repeat([]byte{0xff}, maxResponsePreviewSize+1024)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		_, _ = w.Write(large)
+	}))
+	defer server.Close()
+
+	result, err := executeRequest(context.Background(), executionPlan{
+		Request: RequestSpec{Name: "big", Method: http.MethodGet, URL: server.URL, Headers: http.Header{}},
+		Runtime: RuntimeConfig{Config: Config{Vars: map[string]string{}}, FileVars: map[string]string{}, CLIVars: map[string]string{}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.body) != maxResponsePreviewSize {
+		t.Fatalf("expected preview capped at %d bytes, got %d", maxResponsePreviewSize, len(result.body))
+	}
+	if result.totalBytes != len(large) {
+		t.Fatalf("expected total bytes to reflect full response, got %d want %d", result.totalBytes, len(large))
+	}
+	if !result.previewTruncated {
+		t.Fatal("expected previewTruncated to be true")
+	}
+}
+
+func TestSanitizeErrorRedactsURLWithoutLeakingOriginalText(t *testing.T) {
+	t.Parallel()
+
+	rawURL := "https://user:secret@example.com/path?token=abc123"
+	cause := fmt.Errorf("dial %s: connection refused", rawURL)
+	sanitized := sanitizeError(cause, rawURL)
+	if strings.Contains(sanitized.Error(), "secret") || strings.Contains(sanitized.Error(), "abc123") {
+		t.Fatalf("expected sanitized error to omit secrets, got %q", sanitized.Error())
+	}
+	if !errors.Is(sanitized, cause) {
+		t.Fatal("expected sanitized error to unwrap to the original cause")
 	}
 }
 
@@ -866,6 +911,21 @@ func TestGetAzureTokenUsesCustomTokenURLScopeAndTLSConfig(t *testing.T) {
 	}
 	if gotGrantType != "client_credentials" || gotScope != "https://vault.azure.net/.default" {
 		t.Fatalf("unexpected token request form grant_type=%q scope=%q", gotGrantType, gotScope)
+	}
+}
+
+func TestGetAzureTokenRequiresTenantIDForBuiltinEndpoint(t *testing.T) {
+	t.Parallel()
+
+	_, err := getAzureToken(context.Background(), resolvedRequest{
+		Auth: AuthConfig{
+			Scheme:       "azuread",
+			ClientID:     "client-id",
+			ClientSecret: "client-secret",
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "tenant_id") {
+		t.Fatalf("expected tenant_id requirement error, got %v", err)
 	}
 }
 

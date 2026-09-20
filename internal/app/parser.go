@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -114,7 +115,9 @@ func parseSection(section, sourcePath string) (RequestSpec, map[string]string, b
 		}
 
 		if state == "preamble" && strings.HasPrefix(trimmed, "#") {
-			parseDirective(&spec, trimmed)
+			if err := parseDirective(&spec, trimmed); err != nil {
+				return RequestSpec{}, nil, false, err
+			}
 			continue
 		}
 
@@ -174,14 +177,14 @@ func parseAssignment(line string) (string, string, bool) {
 	return strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]), true
 }
 
-func parseDirective(spec *RequestSpec, line string) {
+func parseDirective(spec *RequestSpec, line string) error {
 	trimmed := strings.TrimSpace(strings.TrimPrefix(line, "#"))
 	if !strings.HasPrefix(trimmed, "@") {
-		return
+		return nil
 	}
 	fields := strings.Fields(strings.TrimPrefix(trimmed, "@"))
 	if len(fields) == 0 {
-		return
+		return nil
 	}
 
 	key := strings.ToLower(fields[0])
@@ -202,11 +205,16 @@ func parseDirective(spec *RequestSpec, line string) {
 	case "self-signed-cert":
 		spec.SelfSignedCertFile = value
 	case "insecure":
-		spec.Insecure = strings.EqualFold(value, "true") || value == "1" || strings.EqualFold(value, "yes")
+		insecure, err := strconv.ParseBool(value)
+		if err != nil {
+			return fmt.Errorf("invalid @insecure value %q: must be a boolean (true/false/1/0)", value)
+		}
+		spec.Insecure = insecure
 		spec.InsecureSet = true
 	case "auth":
 		spec.Auth = parseAuthDirective(value)
 	}
+	return nil
 }
 
 var authKVFields = map[string]bool{

@@ -112,7 +112,7 @@ func executeRequest(ctx context.Context, plan executionPlan) (responseResult, er
 
 	request, err := http.NewRequestWithContext(ctx, resolved.Method, resolved.URL, bytes.NewReader(bodyBytes))
 	if err != nil {
-		return responseResult{outputFile: resolved.OutputFile}, err
+		return responseResult{outputFile: resolved.OutputFile}, sanitizeError(err, resolved.URL)
 	}
 	request.GetBody = func() (io.ReadCloser, error) {
 		return io.NopCloser(bytes.NewReader(bodyBytes)), nil
@@ -203,12 +203,30 @@ func executeRequest(ctx context.Context, plan executionPlan) (responseResult, er
 		logger.Infof("request %q completed with status=%s duration=%s", safeRequestLabel(resolved.Name, resolved.URL), resp.Status, time.Since(started).Round(time.Microsecond))
 		return responseResult{resp: resp, body: body, outputFile: resolved.OutputFile, totalBytes: totalBytes, previewTruncated: truncated}, nil
 	}
-	body, err := io.ReadAll(resp.Body)
+	body, totalBytes, truncated, err := readCappedBody(resp.Body, maxResponsePreviewSize)
 	if err != nil {
 		return responseResult{outputFile: resolved.OutputFile}, err
 	}
 	logger.Infof("request %q completed with status=%s duration=%s", safeRequestLabel(resolved.Name, resolved.URL), resp.Status, time.Since(started).Round(time.Microsecond))
-	return responseResult{resp: resp, body: body, outputFile: resolved.OutputFile, totalBytes: len(body)}, nil
+	return responseResult{resp: resp, body: body, outputFile: resolved.OutputFile, totalBytes: totalBytes, previewTruncated: truncated}, nil
+}
+
+// readCappedBody reads at most limit bytes of reader into memory for preview
+// purposes, then drains and counts any remaining bytes without buffering
+// them, so a large response (especially one whose body will be discarded
+// as binary) cannot exhaust memory on the stdout path.
+func readCappedBody(reader io.Reader, limit int) ([]byte, int, bool, error) {
+	limited := io.LimitReader(reader, int64(limit))
+	body, err := io.ReadAll(limited)
+	if err != nil {
+		return nil, len(body), false, err
+	}
+	remaining, err := io.Copy(io.Discard, reader)
+	if err != nil {
+		return nil, len(body) + int(remaining), false, err
+	}
+	totalBytes := len(body) + int(remaining)
+	return body, totalBytes, remaining > 0, nil
 }
 
 type outputFileState struct {
@@ -606,8 +624,20 @@ func sanitizeError(err error, rawURL string) error {
 	if message == err.Error() {
 		return err
 	}
-	return fmt.Errorf("%s: %w", message, err)
+	return &sanitizedError{message: message, cause: err}
 }
+
+// sanitizedError reports a redacted message via Error() while still allowing
+// errors.Is/errors.As to reach the original cause via Unwrap. This avoids the
+// leak that fmt.Errorf("%s: %w", message, err) would introduce, since %w's
+// formatting includes the wrapped error's own (unredacted) Error() text.
+type sanitizedError struct {
+	message string
+	cause   error
+}
+
+func (e *sanitizedError) Error() string { return e.message }
+func (e *sanitizedError) Unwrap() error { return e.cause }
 
 func buildTransport(resolved resolvedRequest) (http.RoundTripper, io.Closer, error) {
 	if resolved.Logger != nil {
@@ -688,6 +718,14 @@ func http2ProxyDialer(proxyURL *url.URL, cfg *tls.Config) func(ctx context.Conte
 		if err != nil {
 			return nil, err
 		}
+		// Close conn if ctx is canceled while negotiating the CONNECT tunnel
+		// or performing the TLS handshake, since neither respects ctx on its
+		// own once the initial dial has succeeded. Stop watching once the
+		// handshake completes so a later context cancellation only affects
+		// in-flight reads/writes, not the established connection.
+		stopWatch := watchContext(ctx, conn)
+		defer stopWatch()
+
 		connectReq := &http.Request{
 			Method: http.MethodConnect,
 			URL:    &url.URL{Opaque: addr},
@@ -721,6 +759,28 @@ func http2ProxyDialer(proxyURL *url.URL, cfg *tls.Config) func(ctx context.Conte
 			return nil, err
 		}
 		return tlsConn, nil
+	}
+}
+
+// watchContext closes conn if ctx is canceled before the returned stop
+// function is called, and is a no-op once stop has run. It lets CONNECT
+// negotiation and the TLS handshake, neither of which take a context
+// themselves for their I/O, observe cancellation and timeouts.
+func watchContext(ctx context.Context, conn net.Conn) (stop func()) {
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			conn.Close()
+		case <-done:
+		}
+	}()
+	var stopped bool
+	return func() {
+		if !stopped {
+			stopped = true
+			close(done)
+		}
 	}
 }
 
@@ -828,10 +888,14 @@ func getAzureToken(ctx context.Context, resolved resolvedRequest) (string, error
 	tokenURL := resolved.Auth.TokenURL
 	form := url.Values{}
 	tenant := resolved.Auth.TenantID
-	if tenant == "" {
-		tenant = "common"
-	}
 	if tokenURL == "" {
+		// The Microsoft identity platform does not support client-credentials
+		// grants through the multi-tenant "common"/"organizations"/"consumers"
+		// authorities, so a specific tenant is required for the built-in
+		// token endpoint. A custom token_url may still use its own authority.
+		if tenant == "" {
+			return "", errors.New("azuread auth requires tenant_id (or a custom token_url) for client-credentials grants")
+		}
 		if resolved.Auth.Resource != "" {
 			tokenURL = fmt.Sprintf("https://login.microsoftonline.com/%s/oauth2/token", tenant)
 		} else {
@@ -858,7 +922,7 @@ func getAzureToken(ctx context.Context, resolved resolvedRequest) (string, error
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, strings.NewReader(form.Encode()))
 	if err != nil {
-		return "", err
+		return "", sanitizeError(err, tokenURL)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	if resolved.Logger != nil {
@@ -881,7 +945,7 @@ func getAzureToken(ctx context.Context, resolved resolvedRequest) (string, error
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", err
+		return "", sanitizeError(err, tokenURL)
 	}
 	defer resp.Body.Close()
 
@@ -1045,7 +1109,11 @@ func writeResponse(w io.Writer, req RequestSpec, resp *http.Response, body []byt
 	if strings.HasPrefix(mediaType, "text/") || isJSON || strings.HasSuffix(mediaType, "+xml") || mediaType == "application/xml" || mediaType == "" {
 		_, err := fmt.Fprintln(w, string(body))
 		if err == nil && info.previewTruncated {
-			_, err = fmt.Fprintf(w, "%s\n", colorizer.Meta("response preview truncated at %d bytes; full body saved to %s (bytes=%d)", len(body), outputFile, info.totalBytes))
+			if outputFile != "" {
+				_, err = fmt.Fprintf(w, "%s\n", colorizer.Meta("response preview truncated at %d bytes; full body saved to %s (bytes=%d)", len(body), outputFile, info.totalBytes))
+			} else {
+				_, err = fmt.Fprintf(w, "%s\n", colorizer.Meta("response preview truncated at %d bytes (total bytes=%d); use --output to save the full body", len(body), info.totalBytes))
+			}
 		}
 		return err
 	}
