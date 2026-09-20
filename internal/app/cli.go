@@ -18,6 +18,12 @@ import (
 
 const usageText = "usage: gorc [flags] /absolute/or/relative/file.http"
 
+// Version is the gorc release version. It defaults to "dev" for local/
+// unreleased builds and is overridden at release-build time via:
+//
+//	go build -ldflags "-X github.com/ramjac/gorc/internal/app.Version=v1.2.3"
+var Version = "dev"
+
 type cliParser struct {
 	cmd         *cobra.Command
 	names       []string
@@ -89,8 +95,9 @@ func parseRunOptions(args []string) (RunOptions, error) {
 func newCLIParser(stdout, stderr io.Writer, runner func(context.Context, RunOptions) error) *cliParser {
 	parser := &cliParser{}
 	cmd := &cobra.Command{
-		Use:   "gorc [flags] /absolute/or/relative/file.http",
-		Short: "Execute REST requests defined in .http files",
+		Use:     "gorc [flags] /absolute/or/relative/file.http",
+		Short:   "Execute REST requests defined in .http files",
+		Version: Version,
 		Long: "gorc executes one or more REST requests defined in a .http file.\n\n" +
 			"If no file is provided and the current directory contains exactly one .http file, gorc uses it automatically. " +
 			"For multi-request files, use --all, --index, --name, or --interactive to choose which requests to run.",
@@ -121,6 +128,7 @@ func newCLIParser(stdout, stderr io.Writer, runner func(context.Context, RunOpti
 	}
 	cmd.SetOut(stdout)
 	cmd.SetErr(stderr)
+	cmd.SetVersionTemplate("gorc {{.Version}}\n")
 	cmd.SetFlagErrorFunc(func(_ *cobra.Command, err error) error {
 		return usageError{err: err}
 	})

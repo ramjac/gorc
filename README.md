@@ -26,11 +26,23 @@ This project was a learning project using GPT-5.X coding assistants.
 go build ./...
 ```
 
+To embed a version string in the binary (used by `gorc --version`):
+
+```bash
+go build -ldflags "-X github.com/ramjac/gorc/internal/app.Version=v0.5.0-beta" ./cmd/gorc
+```
+
 ## Test
 
 ```bash
 go test ./...
 ```
+
+## Releases
+
+Tagged pushes matching `v*` (for example `v0.5.0-beta`) trigger the `Release` GitHub Actions workflow, which builds `gorc` for linux/darwin/windows (amd64/arm64, excluding windows/arm64), uploads checksummed archives, and publishes a GitHub Release. Tags containing a hyphen (such as `-beta`) are published as pre-releases. See [Releases](https://github.com/ramjac/gorc/releases) for published builds.
+
+Every push and pull request targeting `main` runs the `CI` workflow (`go build`, `go vet`, `go test`).
 
 ## Examples
 
@@ -78,6 +90,7 @@ If no file is specified and the current directory contains exactly one `.http` f
 - `--no-color`, `-C` disable colored output
 - `--self-signed-cert`, `-s` trust a specific self-signed server certificate
 - `--insecure`, `-k` skip TLS verification
+- `--version` print the gorc version and exit
 
 By default, `gorc` uses color for HTTP responses and diagnostic logging. Use `--no-color` or config `no_color: true` to disable it.
 

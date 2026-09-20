@@ -39,7 +39,26 @@ func TestRunDefaultLoggingIsSilent(t *testing.T) {
 	}
 }
 
+func TestRunVersionFlagPrintsVersion(t *testing.T) {
+	// Not parallel: mutates the package-level Version var, which other
+	// parallel tests read indirectly via newCLIParser when constructing a
+	// cobra.Command.
+	originalVersion := Version
+	Version = "v0.5.0-beta"
+	defer func() { Version = originalVersion }()
+
+	var stdout, stderr strings.Builder
+	exitCode := runWithContext(context.Background(), []string{"--version"}, &stdout, &stderr)
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d (stderr=%q)", exitCode, stderr.String())
+	}
+	if got := strings.TrimSpace(stdout.String()); got != "gorc v0.5.0-beta" {
+		t.Fatalf("expected version output %q, got %q", "gorc v0.5.0-beta", got)
+	}
+}
+
 func TestRunOverwritesOutputFileOnEachInvocation(t *testing.T) {
+
 	handler := http.NewServeMux()
 	handler.HandleFunc("/first", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("first"))
