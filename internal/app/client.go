@@ -32,6 +32,9 @@ import (
 )
 
 func executeRequests(ctx context.Context, plans []executionPlan, stdout io.Writer) error {
+
+Intentionally invalid change to break build/test and check to see if branch protection prevents merge.
+
 	var jar http.CookieJar
 	var outputFiles *outputFileState
 	if len(plans) > 0 {
