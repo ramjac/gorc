@@ -98,6 +98,8 @@ By default, `gorc` stays quiet and only prints HTTP request results to stdout. D
 
 Each `gorc` invocation overwrites an existing output file on its first response, then appends later response bodies that target the same file.
 
+When multiple requests run, gorc ends the output with a summary showing how many responses had successful status codes below `400` and how many had failure status codes of `400` or higher.
+
 If a request is interrupted with Ctrl+C or a similar termination signal, `gorc` cancels the in-flight work, prints `cancelled` to stderr, and exits with code `130`.
 
 ## `.http` format

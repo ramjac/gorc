@@ -157,6 +157,72 @@ func TestExecuteRequestsAppendsBodiesToSharedOutputFile(t *testing.T) {
 	}
 }
 
+func TestExecuteRequestsSummarizesMultipleStatusCodes(t *testing.T) {
+	t.Parallel()
+
+	handler := http.NewServeMux()
+	handler.HandleFunc("/success", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	handler.HandleFunc("/failure", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "failed", http.StatusBadRequest)
+	})
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	runtime := RuntimeConfig{
+		Config:    Config{Vars: map[string]string{}},
+		FileVars:  map[string]string{},
+		CLIVars:   map[string]string{},
+		Colorizer: NewColorizer(false),
+	}
+	plans := []executionPlan{
+		{
+			Request: RequestSpec{Name: "success", Method: http.MethodGet, URL: server.URL + "/success", Headers: http.Header{}},
+			Runtime: runtime,
+		},
+		{
+			Request: RequestSpec{Name: "failure", Method: http.MethodGet, URL: server.URL + "/failure", Headers: http.Header{}},
+			Runtime: runtime,
+		},
+	}
+
+	var output strings.Builder
+	if err := executeRequests(context.Background(), plans, &output); err != nil {
+		t.Fatal(err)
+	}
+	if want := "### Summary\nSuccessful (<400): 1\nFailed (>=400): 1\n"; !strings.HasSuffix(output.String(), want) {
+		t.Fatalf("expected output to end with %q, got %q", want, output.String())
+	}
+}
+
+func TestExecuteRequestsOmitsSummaryForSingleRequest(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	plans := []executionPlan{{
+		Request: RequestSpec{Name: "single", Method: http.MethodGet, URL: server.URL, Headers: http.Header{}},
+		Runtime: RuntimeConfig{
+			Config:    Config{Vars: map[string]string{}},
+			FileVars:  map[string]string{},
+			CLIVars:   map[string]string{},
+			Colorizer: NewColorizer(false),
+		},
+	}}
+
+	var output strings.Builder
+	if err := executeRequests(context.Background(), plans, &output); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(output.String(), "### Summary") {
+		t.Fatalf("expected no summary for one request, got %q", output.String())
+	}
+}
+
 func TestExecuteRequestCapsStdoutBodyPreviewForLargeBinaryResponse(t *testing.T) {
 	t.Parallel()
 

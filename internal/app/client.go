@@ -34,6 +34,8 @@ import (
 func executeRequests(ctx context.Context, plans []executionPlan, stdout io.Writer) error {
 	var jar http.CookieJar
 	var outputFiles *outputFileState
+	successes := 0
+	failures := 0
 	if len(plans) > 0 {
 		jar = plans[0].Runtime.CookieJar
 		outputFiles = plans[0].Runtime.outputFiles
@@ -69,6 +71,27 @@ func executeRequests(ctx context.Context, plans []executionPlan, stdout io.Write
 			totalBytes:       result.totalBytes,
 			previewTruncated: result.previewTruncated,
 		}); err != nil {
+			return err
+		}
+		if result.resp.StatusCode < http.StatusBadRequest {
+			successes++
+		} else {
+			failures++
+		}
+	}
+
+	if len(plans) > 1 {
+		colorizer := plans[0].Runtime.Colorizer
+		if colorizer == nil {
+			colorizer = NewColorizer(false)
+		}
+		if _, err := fmt.Fprintf(
+			stdout,
+			"\n%s\n%s\n%s\n",
+			colorizer.Title("### Summary"),
+			colorizer.Status(fmt.Sprintf("Successful (<400): %d", successes), http.StatusOK),
+			colorizer.Status(fmt.Sprintf("Failed (>=400): %d", failures), http.StatusBadRequest),
+		); err != nil {
 			return err
 		}
 	}
