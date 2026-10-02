@@ -34,11 +34,18 @@ import (
 func executeRequests(ctx context.Context, plans []executionPlan, stdout io.Writer) error {
 	var jar http.CookieJar
 	var outputFiles *outputFileState
+	var document *jsonDocument
 	successes := 0
 	failures := 0
 	if len(plans) > 0 {
 		jar = plans[0].Runtime.CookieJar
 		outputFiles = plans[0].Runtime.outputFiles
+		if plans[0].Runtime.Format == "json" {
+			document = plans[0].Runtime.jsonOutput
+			if document == nil {
+				document = &jsonDocument{Responses: []jsonResponse{}}
+			}
+		}
 	}
 	if jar == nil {
 		var err error
@@ -62,16 +69,20 @@ func executeRequests(ctx context.Context, plans []executionPlan, stdout io.Write
 			plan.Runtime.Logger.Errorf("request %q failed: %v", safeRequestLabel(plan.Request.Name, plan.Request.URL), sanitizeError(err, plan.Request.URL))
 			return err
 		}
-		if i > 0 {
-			if _, err := fmt.Fprintln(stdout); err != nil {
+		if document != nil {
+			document.add(plan.Request, result)
+		} else {
+			if i > 0 {
+				if _, err := fmt.Fprintln(stdout); err != nil {
+					return err
+				}
+			}
+			if err := writeResponse(stdout, plan.Request, result.resp, result.body, result.outputFile, plan.Runtime.Colorizer, responseMetadata{
+				totalBytes:       result.totalBytes,
+				previewTruncated: result.previewTruncated,
+			}); err != nil {
 				return err
 			}
-		}
-		if err := writeResponse(stdout, plan.Request, result.resp, result.body, result.outputFile, plan.Runtime.Colorizer, responseMetadata{
-			totalBytes:       result.totalBytes,
-			previewTruncated: result.previewTruncated,
-		}); err != nil {
-			return err
 		}
 		if result.resp.StatusCode < http.StatusBadRequest {
 			successes++
@@ -80,6 +91,12 @@ func executeRequests(ctx context.Context, plans []executionPlan, stdout io.Write
 		}
 	}
 
+	if document != nil {
+		if plans[0].Runtime.jsonOutput == nil {
+			return json.NewEncoder(stdout).Encode(document)
+		}
+		return nil
+	}
 	if len(plans) > 1 {
 		colorizer := plans[0].Runtime.Colorizer
 		if colorizer == nil {
@@ -97,6 +114,63 @@ func executeRequests(ctx context.Context, plans []executionPlan, stdout io.Write
 	}
 
 	return nil
+}
+
+type jsonDocument struct {
+	Responses []jsonResponse `json:"responses"`
+	Summary   *jsonSummary   `json:"summary,omitempty"`
+}
+
+type jsonResponse struct {
+	Request       string      `json:"request"`
+	Status        string      `json:"status"`
+	StatusCode    int         `json:"status_code"`
+	Headers       http.Header `json:"headers"`
+	Body          string      `json:"body"`
+	BodyBytes     int         `json:"body_bytes"`
+	BodyTruncated bool        `json:"body_truncated"`
+	BodyOmitted   bool        `json:"body_omitted"`
+	OutputFile    string      `json:"output_file,omitempty"`
+}
+
+type jsonSummary struct {
+	Successful int `json:"successful"`
+	Failed     int `json:"failed"`
+}
+
+func (document *jsonDocument) add(req RequestSpec, result responseResult) {
+	resp := result.resp
+	mediaType, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type"))
+	text := isTextualResponse(mediaType)
+	entry := jsonResponse{
+		Request:       safeRequestLabel(req.Name, req.URL),
+		Status:        resp.Status,
+		StatusCode:    resp.StatusCode,
+		Headers:       resp.Header,
+		BodyBytes:     result.totalBytes,
+		BodyTruncated: result.previewTruncated && text,
+		BodyOmitted:   len(result.body) > 0 && !text,
+		OutputFile:    result.outputFile,
+	}
+	if text {
+		entry.Body = string(result.body)
+	}
+	document.Responses = append(document.Responses, entry)
+	if len(document.Responses) > 1 {
+		if document.Summary == nil {
+			document.Summary = &jsonSummary{}
+			if document.Responses[0].StatusCode < http.StatusBadRequest {
+				document.Summary.Successful++
+			} else {
+				document.Summary.Failed++
+			}
+		}
+		if resp.StatusCode < http.StatusBadRequest {
+			document.Summary.Successful++
+		} else {
+			document.Summary.Failed++
+		}
+	}
 }
 
 type responseResult struct {
@@ -1191,7 +1265,7 @@ func writeResponse(w io.Writer, req RequestSpec, resp *http.Response, body []byt
 			}
 		}
 	}
-	if strings.HasPrefix(mediaType, "text/") || isJSON || strings.HasSuffix(mediaType, "+xml") || mediaType == "application/xml" || mediaType == "" {
+	if isTextualResponse(mediaType) {
 		_, err := fmt.Fprintln(w, string(body))
 		if err == nil && info.previewTruncated {
 			if outputFile != "" {
@@ -1209,4 +1283,10 @@ func writeResponse(w io.Writer, req RequestSpec, resp *http.Response, body []byt
 	}
 	_, err := fmt.Fprintf(w, "%s\n", colorizer.Meta("binary body omitted from stdout (content-type=%s, bytes=%d); use --output to save it", contentType, info.totalBytes))
 	return err
+}
+
+func isTextualResponse(mediaType string) bool {
+	return strings.HasPrefix(mediaType, "text/") || strings.HasSuffix(mediaType, "+json") ||
+		mediaType == "application/json" || strings.HasSuffix(mediaType, "+xml") ||
+		mediaType == "application/xml" || mediaType == ""
 }

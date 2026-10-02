@@ -87,6 +87,7 @@ If no file is specified and the current directory contains exactly one `.http` f
 - `--proxy`, `-p` use a proxy
 - `--http-version`, `-H` select the HTTP version
 - `--log-level`, `-l` control diagnostic logging on stderr
+- `--format` select console response format (`text` or `json`)
 - `--no-color`, `-C` disable colored output
 - `--self-signed-cert`, `-s` trust a specific self-signed server certificate
 - `--insecure`, `-k` skip TLS verification
@@ -95,6 +96,10 @@ If no file is specified and the current directory contains exactly one `.http` f
 By default, `gorc` uses color for HTTP responses and diagnostic logging. Use `--no-color` or config `no_color: true` to disable it.
 
 By default, `gorc` stays quiet and only prints HTTP request results to stdout. Diagnostic logging is opt-in and is written to stderr.
+
+Use `--format json` (or config `"format": "json"`) to print one JSON document to stdout with a `responses` array and, when more than one response is returned, a `summary` with `successful` and `failed` counts. Each response includes `request`, `status`, `status_code`, `headers`, `body`, `body_bytes`, `body_truncated`, and `body_omitted`; `output_file` is included when a response body was saved. The body is a string (including for JSON HTTP bodies), not parsed JSON. As with text output, binary bodies are omitted and text bodies are previewed at up to 1 MiB; `body_bytes` records the full size. JSON output has no ANSI colors. In interactive mode, selection prompts go to stderr and stdout receives a single JSON document when you quit. Errors and diagnostic logs remain plain text on stderr. `--output` and `# @output` continue to save raw response bodies, unaffected by `--format`.
+
+For machine-friendly output, use `gorc --format json --log-level none requests.http`. This keeps successful-run stdout to the JSON document by suppressing diagnostic logs; errors and cancellation messages may still be written to stderr.
 
 Each `gorc` invocation overwrites an existing output file on its first response, then appends later response bodies that target the same file.
 
@@ -238,6 +243,7 @@ Example:
 {
   "http_version": "auto",
   "log_level": "debug",
+  "format": "text",
   "no_color": false,
   "proxy": "http://127.0.0.1:8080",
   "self_signed_cert_file": "./certs/server.pem",
