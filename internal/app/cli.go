@@ -3,6 +3,7 @@ package app
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -36,6 +37,7 @@ type cliParser struct {
 	proxy       string
 	httpVersion string
 	logLevel    string
+	format      string
 	noColor     bool
 	selfSigned  string
 	insecure    bool
@@ -144,6 +146,7 @@ func newCLIParser(stdout, stderr io.Writer, runner func(context.Context, RunOpti
 	flags.StringVarP(&parser.proxy, "proxy", "p", "", "proxy URL")
 	flags.StringVarP(&parser.httpVersion, "http-version", "H", "", "HTTP version: auto, 1, 2, or 3")
 	flags.StringVarP(&parser.logLevel, "log-level", "l", "", "log level: none, error, info, debug, or trace")
+	flags.StringVar(&parser.format, "format", "", "console response format: text or json")
 	flags.BoolVarP(&parser.noColor, "no-color", "C", false, "disable colored output")
 	flags.StringVarP(&parser.selfSigned, "self-signed-cert", "s", "", "PEM file for a trusted self-signed server certificate")
 	flags.BoolVarP(&parser.insecure, "insecure", "k", false, "skip TLS verification")
@@ -192,6 +195,7 @@ func (p *cliParser) buildOptions(args []string) (RunOptions, error) {
 		Proxy:              p.proxy,
 		HTTPVersion:        p.httpVersion,
 		LogLevel:           p.logLevel,
+		Format:             p.format,
 		NoColor:            p.noColor,
 		SelfSignedCertFile: p.selfSigned,
 		Insecure:           p.insecure,
@@ -253,6 +257,16 @@ func run(ctx context.Context, options RunOptions, stdout, stderr io.Writer) erro
 	if options.LogLevel != "" {
 		logLevel = options.LogLevel
 	}
+	format := cfg.Format
+	if options.Format != "" {
+		format = options.Format
+	}
+	if format == "" {
+		format = "text"
+	}
+	if format != "text" && format != "json" {
+		return fmt.Errorf("invalid output format %q: expected text or json", format)
+	}
 	noColor := cfg.NoColor || options.NoColor
 	colorEnabled := !noColor
 	colorizer := NewColorizer(colorEnabled)
@@ -280,6 +294,7 @@ func run(ctx context.Context, options RunOptions, stdout, stderr io.Writer) erro
 		Proxy:              options.Proxy,
 		HTTPVersion:        options.HTTPVersion,
 		LogLevel:           logLevel,
+		Format:             format,
 		ColorEnabled:       colorEnabled,
 		Colorizer:          colorizer,
 		SelfSignedCertFile: options.SelfSignedCertFile,
@@ -348,12 +363,17 @@ func runInteractive(ctx context.Context, requests []RequestSpec, runtime Runtime
 	if runtime.outputFiles == nil {
 		runtime.outputFiles = newOutputFileState()
 	}
+	promptOutput := stdout
+	if runtime.Format == "json" {
+		promptOutput = stderr
+		runtime.jsonOutput = &jsonDocument{Responses: []jsonResponse{}}
+	}
 	reader := bufio.NewReader(input)
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		selected, quit, err := interactiveSelection(ctx, requests, reader, input, stdout, stderr)
+		selected, quit, err := interactiveSelection(ctx, requests, reader, input, promptOutput, stderr)
 		if err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
@@ -361,6 +381,9 @@ func runInteractive(ctx context.Context, requests []RequestSpec, runtime Runtime
 			return err
 		}
 		if quit {
+			if runtime.jsonOutput != nil {
+				return json.NewEncoder(stdout).Encode(runtime.jsonOutput)
+			}
 			return nil
 		}
 		if err := executeRequests(ctx, buildExecutionPlans(selected, runtime), stdout); err != nil {

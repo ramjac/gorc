@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -36,6 +37,165 @@ func TestRunDefaultLoggingIsSilent(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "ok") {
 		t.Fatalf("expected response body in stdout, got %q", stdout.String())
+	}
+}
+
+func TestRunJSONFormatFromFlagAndConfig(t *testing.T) {
+	t.Parallel()
+
+	handler := http.NewServeMux()
+	handler.HandleFunc("/ok", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Add("Set-Cookie", "one=1")
+		w.Header().Add("Set-Cookie", "two=2")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})
+	handler.HandleFunc("/bad", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "bad", http.StatusBadRequest)
+	})
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	requestFile := writeHTTPFile(t, "# @name first\nGET "+server.URL+"/ok\n###\n# @name second\nGET "+server.URL+"/bad\n")
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(configPath, []byte(`{"format":"json","log_level":"info"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"--config", configPath, "--all", requestFile},
+		{"--config", configPath, "--format", "json", "--all", requestFile},
+	} {
+		var stdout, stderr strings.Builder
+		if code := runWithContext(context.Background(), args, &stdout, &stderr); code != 0 {
+			t.Fatalf("exit %d: %s", code, stderr.String())
+		}
+		var document jsonDocument
+		if err := json.Unmarshal([]byte(stdout.String()), &document); err != nil {
+			t.Fatalf("invalid JSON stdout %q: %v", stdout.String(), err)
+		}
+		if len(document.Responses) != 2 || document.Summary == nil || document.Summary.Successful != 1 || document.Summary.Failed != 1 {
+			t.Fatalf("unexpected document: %+v", document)
+		}
+		first := document.Responses[0]
+		if first.Request != "first" || first.StatusCode != 200 || first.Body != `{"ok":true}` || first.BodyBytes != len(first.Body) ||
+			len(first.Headers.Values("Set-Cookie")) != 2 || first.BodyTruncated || first.BodyOmitted {
+			t.Fatalf("unexpected first response: %+v", first)
+		}
+		if document.Responses[1].Request != "second" || document.Responses[1].StatusCode != 400 {
+			t.Fatalf("unexpected second response: %+v", document.Responses[1])
+		}
+		if strings.Contains(stdout.String(), "\x1b[") || !strings.Contains(stderr.String(), "completed with status=") {
+			t.Fatalf("expected uncolored JSON stdout and diagnostic stderr, stdout=%q stderr=%q", stdout.String(), stderr.String())
+		}
+	}
+}
+
+func TestRunJSONFormatOverrideAndInvalidFormat(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer server.Close()
+	requestFile := writeHTTPFile(t, "GET "+server.URL+"\n")
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(configPath, []byte(`{"format":"json"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr strings.Builder
+	if code := runWithContext(context.Background(), []string{"--config", configPath, "--format", "text", requestFile}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit %d: %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "### ") {
+		t.Fatalf("expected text override, got %q", stdout.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := runWithContext(context.Background(), []string{"--format", "json", requestFile}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit %d: %s", code, stderr.String())
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(stdout.String()), &raw); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := raw["summary"]; ok {
+		t.Fatalf("single response should have no summary: %s", stdout.String())
+	}
+	var responses []jsonResponse
+	if err := json.Unmarshal(raw["responses"], &responses); err != nil || len(responses) != 1 || responses[0].Body != "ok" {
+		t.Fatalf("unexpected single response: %+v, err=%v", responses, err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := runWithContext(context.Background(), []string{"--format", "xml", requestFile}, &stdout, &stderr); code != 1 {
+		t.Fatalf("expected invalid format error, exit=%d stderr=%q", code, stderr.String())
+	}
+	if stdout.Len() != 0 || !strings.Contains(stderr.String(), `invalid output format "xml"`) {
+		t.Fatalf("expected stderr-only format error, stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
+
+func TestRunJSONFormatPreservesOutputFileAndBodyLimits(t *testing.T) {
+	t.Parallel()
+
+	large := strings.Repeat("x", maxResponsePreviewSize+5)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/binary" {
+			w.Header().Set("Content-Type", "application/octet-stream")
+			_, _ = w.Write([]byte{0, 1, 2})
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte(large))
+	}))
+	defer server.Close()
+	requestFile := writeHTTPFile(t, "GET "+server.URL+"/text\n###\nGET "+server.URL+"/binary\n")
+	outputFile := filepath.Join(t.TempDir(), "responses")
+	var stdout, stderr strings.Builder
+	if code := runWithContext(context.Background(), []string{"--format", "json", "--all", "--output", outputFile, requestFile}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit %d: %s", code, stderr.String())
+	}
+	var document jsonDocument
+	if err := json.Unmarshal([]byte(stdout.String()), &document); err != nil {
+		t.Fatal(err)
+	}
+	text, binary := document.Responses[0], document.Responses[1]
+	if text.BodyBytes != len(large) || len(text.Body) != maxResponsePreviewSize || !text.BodyTruncated || text.BodyOmitted || text.OutputFile != outputFile {
+		t.Fatalf("unexpected text preview: bytes=%d preview=%d truncated=%t omitted=%t file=%q", text.BodyBytes, len(text.Body), text.BodyTruncated, text.BodyOmitted, text.OutputFile)
+	}
+	if binary.Body != "" || !binary.BodyOmitted || binary.BodyBytes != 3 || binary.BodyTruncated || binary.OutputFile != outputFile {
+		t.Fatalf("unexpected binary response: %+v", binary)
+	}
+	data, err := os.ReadFile(outputFile)
+	if err != nil || string(data) != large+"\x00\x01\x02" {
+		t.Fatalf("unexpected raw output file: length=%d err=%v", len(data), err)
+	}
+}
+
+func TestRunInteractiveJSONWritesPromptsToStderr(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer server.Close()
+	requests := []RequestSpec{{Name: "once", Method: http.MethodGet, URL: server.URL, Headers: http.Header{}}}
+	var stdout, stderr strings.Builder
+	err := runInteractive(context.Background(), requests, RuntimeConfig{
+		Format: "json", Config: Config{Vars: map[string]string{}},
+	}, &stdout, &stderr, strings.NewReader("1\n1\nq\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document jsonDocument
+	if err := json.Unmarshal([]byte(stdout.String()), &document); err != nil {
+		t.Fatalf("invalid interactive JSON %q: %v", stdout.String(), err)
+	}
+	if len(document.Responses) != 2 || document.Summary == nil || document.Summary.Successful != 2 {
+		t.Fatalf("unexpected interactive results: %+v", document)
+	}
+	if !strings.Contains(stderr.String(), "Available requests:") || strings.Contains(stdout.String(), "Available requests:") {
+		t.Fatalf("unexpected prompt streams stdout=%q stderr=%q", stdout.String(), stderr.String())
 	}
 }
 

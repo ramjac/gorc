@@ -51,6 +51,7 @@ type Config struct {
 	Proxy              string            `json:"proxy" mapstructure:"proxy"`
 	HTTPVersion        string            `json:"http_version" mapstructure:"http_version"`
 	LogLevel           string            `json:"log_level" mapstructure:"log_level"`
+	Format             string            `json:"format" mapstructure:"format"`
 	NoColor            bool              `json:"no_color" mapstructure:"no_color"`
 	Insecure           bool              `json:"insecure" mapstructure:"insecure"`
 	CACertFile         string            `json:"ca_cert_file" mapstructure:"ca_cert_file"`
@@ -75,6 +76,7 @@ type RunOptions struct {
 	Proxy              string
 	HTTPVersion        string
 	LogLevel           string
+	Format             string
 	NoColor            bool
 	SelfSignedCertFile string
 	Insecure           bool
@@ -97,6 +99,7 @@ type RuntimeConfig struct {
 	Proxy              string
 	HTTPVersion        string
 	LogLevel           string
+	Format             string
 	ColorEnabled       bool
 	Colorizer          *Colorizer
 	SelfSignedCertFile string
@@ -105,6 +108,7 @@ type RuntimeConfig struct {
 	Logger             *Logger
 	LogWriter          io.Writer
 	outputFiles        *outputFileState
+	jsonOutput         *jsonDocument
 }
 
 type executionPlan struct {
