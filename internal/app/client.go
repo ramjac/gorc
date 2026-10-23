@@ -645,44 +645,25 @@ func overlayAuth(base, override AuthConfig) AuthConfig {
 	if override.Scheme != "" && base.Scheme != "" && !strings.EqualFold(override.Scheme, base.Scheme) {
 		base = AuthConfig{}
 	}
-	if override.Scheme != "" {
-		base.Scheme = override.Scheme
-	}
-	if override.Username != "" {
-		base.Username = override.Username
-	}
-	if override.Password != "" {
-		base.Password = override.Password
-	}
-	if override.Token != "" {
-		base.Token = override.Token
-	}
-	if override.CertFile != "" {
-		base.CertFile = override.CertFile
-	}
-	if override.KeyFile != "" {
-		base.KeyFile = override.KeyFile
-	}
-	if override.CACertFile != "" {
-		base.CACertFile = override.CACertFile
-	}
-	if override.TenantID != "" {
-		base.TenantID = override.TenantID
-	}
-	if override.ClientID != "" {
-		base.ClientID = override.ClientID
-	}
-	if override.ClientSecret != "" {
-		base.ClientSecret = override.ClientSecret
-	}
-	if override.Scope != "" {
-		base.Scope = override.Scope
-	}
-	if override.Resource != "" {
-		base.Resource = override.Resource
-	}
-	if override.TokenURL != "" {
-		base.TokenURL = override.TokenURL
+	base.Scheme = overlayString(base.Scheme, override.Scheme)
+	base.Username = overlayString(base.Username, override.Username)
+	base.Password = overlayString(base.Password, override.Password)
+	base.Token = overlayString(base.Token, override.Token)
+	base.CertFile = overlayString(base.CertFile, override.CertFile)
+	base.KeyFile = overlayString(base.KeyFile, override.KeyFile)
+	base.CACertFile = overlayString(base.CACertFile, override.CACertFile)
+	base.TenantID = overlayString(base.TenantID, override.TenantID)
+	base.ClientID = overlayString(base.ClientID, override.ClientID)
+	base.ClientSecret = overlayString(base.ClientSecret, override.ClientSecret)
+	base.Scope = overlayString(base.Scope, override.Scope)
+	base.Resource = overlayString(base.Resource, override.Resource)
+	base.TokenURL = overlayString(base.TokenURL, override.TokenURL)
+	return base
+}
+
+func overlayString(base, override string) string {
+	if override != "" {
+		return override
 	}
 	return base
 }
