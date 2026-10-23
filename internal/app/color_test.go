@@ -194,3 +194,91 @@ func TestFormatHeaderLineRendersRepeatedValuesOnSeparateLines(t *testing.T) {
 		t.Fatalf("expected each header value on its own repeated-label line, got %q want %q", got, want)
 	}
 }
+
+func TestColorizerTitle(t *testing.T) {
+	t.Parallel()
+
+	t.Run("disabled color", func(t *testing.T) {
+		t.Parallel()
+		c := NewColorizer(false)
+		got := c.Title("Hello %s", "World")
+		want := "Hello World"
+		if got != want {
+			t.Fatalf("expected %q, got %q", want, got)
+		}
+	})
+
+	t.Run("enabled color", func(t *testing.T) {
+		t.Parallel()
+		c := NewColorizer(true)
+		got := c.Title("Hello %s", "World")
+		if !strings.Contains(got, "Hello World") || !strings.Contains(got, "\x1b[") {
+			t.Fatalf("expected colored output containing 'Hello World', got %q", got)
+		}
+	})
+}
+
+func TestColorizerMethods(t *testing.T) {
+	t.Parallel()
+
+	cDisabled := NewColorizer(false)
+	cEnabled := NewColorizer(true)
+
+	t.Run("Header", func(t *testing.T) {
+		if got := cDisabled.Header("Header: %s", "Value"); got != "Header: Value" {
+			t.Fatalf("expected plain header, got %q", got)
+		}
+		if got := cEnabled.Header("Header: %s", "Value"); !strings.Contains(got, "Header: Value") || !strings.Contains(got, "\x1b[") {
+			t.Fatalf("expected colored header, got %q", got)
+		}
+	})
+
+	t.Run("Meta", func(t *testing.T) {
+		if got := cDisabled.Meta("Meta %d", 123); got != "Meta 123" {
+			t.Fatalf("expected plain meta, got %q", got)
+		}
+		if got := cEnabled.Meta("Meta %d", 123); !strings.Contains(got, "Meta 123") || !strings.Contains(got, "\x1b[") {
+			t.Fatalf("expected colored meta, got %q", got)
+		}
+	})
+
+	t.Run("Status", func(t *testing.T) {
+		statuses := []struct {
+			code int
+			text string
+		}{
+			{200, "200 OK"},
+			{302, "302 Found"},
+			{404, "404 Not Found"},
+			{500, "500 Internal Server Error"},
+		}
+		for _, s := range statuses {
+			if got := cDisabled.Status(s.text, s.code); got != s.text {
+				t.Fatalf("code %d: expected plain status %q, got %q", s.code, s.text, got)
+			}
+			if got := cEnabled.Status(s.text, s.code); !strings.Contains(got, s.text) || !strings.Contains(got, "\x1b[") {
+				t.Fatalf("code %d: expected colored status containing %q, got %q", s.code, s.text, got)
+			}
+		}
+	})
+
+	t.Run("LogLabel", func(t *testing.T) {
+		levels := []LogLevel{LogLevelError, LogLevelInfo, LogLevelDebug, LogLevelTrace, LogLevel(99)}
+		for _, lvl := range levels {
+			plain := cDisabled.LogLabel(lvl)
+			if plain == "" {
+				t.Fatalf("level %v: expected non-empty label", lvl)
+			}
+			colored := cEnabled.LogLabel(lvl)
+			if lvl == LogLevel(99) {
+				if colored != plain {
+					t.Fatalf("unknown level: expected %q, got %q", plain, colored)
+				}
+			} else {
+				if !strings.Contains(colored, plain) || !strings.Contains(colored, "\x1b[") {
+					t.Fatalf("level %v: expected colored label containing %q, got %q", lvl, plain, colored)
+				}
+			}
+		}
+	})
+}
