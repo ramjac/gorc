@@ -194,3 +194,104 @@ func TestFormatHeaderLineRendersRepeatedValuesOnSeparateLines(t *testing.T) {
 		t.Fatalf("expected each header value on its own repeated-label line, got %q want %q", got, want)
 	}
 }
+
+func TestColorizerLogLabel(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		colorEnabled bool
+		level        LogLevel
+		wantText     string
+		wantANSI     bool
+	}{
+		{
+			name:         "Error enabled",
+			colorEnabled: true,
+			level:        LogLevelError,
+			wantText:     "ERROR",
+			wantANSI:     true,
+		},
+		{
+			name:         "Info enabled",
+			colorEnabled: true,
+			level:        LogLevelInfo,
+			wantText:     "INFO",
+			wantANSI:     true,
+		},
+		{
+			name:         "Debug enabled",
+			colorEnabled: true,
+			level:        LogLevelDebug,
+			wantText:     "DEBUG",
+			wantANSI:     true,
+		},
+		{
+			name:         "Trace enabled",
+			colorEnabled: true,
+			level:        LogLevelTrace,
+			wantText:     "TRACE",
+			wantANSI:     true,
+		},
+		{
+			name:         "None level with color enabled",
+			colorEnabled: true,
+			level:        LogLevelNone,
+			wantText:     "NONE",
+			wantANSI:     false,
+		},
+		{
+			name:         "Unknown level with color enabled",
+			colorEnabled: true,
+			level:        LogLevel(99),
+			wantText:     "NONE",
+			wantANSI:     false,
+		},
+		{
+			name:         "Error disabled",
+			colorEnabled: false,
+			level:        LogLevelError,
+			wantText:     "ERROR",
+			wantANSI:     false,
+		},
+		{
+			name:         "Info disabled",
+			colorEnabled: false,
+			level:        LogLevelInfo,
+			wantText:     "INFO",
+			wantANSI:     false,
+		},
+		{
+			name:         "Debug disabled",
+			colorEnabled: false,
+			level:        LogLevelDebug,
+			wantText:     "DEBUG",
+			wantANSI:     false,
+		},
+		{
+			name:         "Trace disabled",
+			colorEnabled: false,
+			level:        LogLevelTrace,
+			wantText:     "TRACE",
+			wantANSI:     false,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			c := NewColorizer(tt.colorEnabled)
+			got := c.LogLabel(tt.level)
+
+			if !strings.Contains(got, tt.wantText) {
+				t.Errorf("LogLabel(%v) = %q, expected to contain %q", tt.level, got, tt.wantText)
+			}
+
+			hasANSI := strings.Contains(got, "\x1b[")
+			if hasANSI != tt.wantANSI {
+				t.Errorf("LogLabel(%v) = %q; hasANSI = %v, wantANSI = %v", tt.level, got, hasANSI, tt.wantANSI)
+			}
+		})
+	}
+}
