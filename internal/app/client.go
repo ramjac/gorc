@@ -470,100 +470,24 @@ func resolveRequest(spec RequestSpec, runtime RuntimeConfig, vars resolver) (res
 		return resolved, err
 	}
 	resolved.HTTPVersion = strings.ToLower(resolved.HTTPVersion)
-	resolved.CertFile, err = chooseResolvedPath(runtime.RootDir, runtime.Config.CertFile, vars)
-	if err != nil {
+
+	if err := resolveRequestTLS(spec, runtime, vars, &resolved); err != nil {
 		return resolved, err
 	}
-	resolved.KeyFile, err = chooseResolvedPath(runtime.RootDir, runtime.Config.KeyFile, vars)
-	if err != nil {
-		return resolved, err
-	}
-	if resolved.SelfSignedCertFile, err = chooseResolvedPath(runtime.RootDir, runtime.SelfSignedCertFile, spec.SelfSignedCertFile, runtime.Config.SelfSignedCertFile, vars); err != nil {
-		return resolved, err
-	}
-	if resolved.Auth.CACertFile != "" {
-		authCACert, err := resolveString(resolved.Auth.CACertFile, vars)
-		if err != nil {
-			return resolved, err
-		}
-		resolved.Auth.CACertFile = resolvePath(runtime.RootDir, authCACert)
-	}
-	// An explicit request-level `# @ca-cert` directive always wins; otherwise
-	// an auth-level CA overrides the global config default.
-	if resolved.CACertFile, err = chooseResolvedPath(runtime.RootDir, spec.CACertFile, resolved.Auth.CACertFile, runtime.Config.CACertFile, vars); err != nil {
-		return resolved, err
-	}
+
 	resolved.Insecure = runtime.Config.Insecure || runtime.Insecure
 	if spec.InsecureSet {
 		resolved.Insecure = spec.Insecure
 	} else if spec.Insecure {
 		resolved.Insecure = true
 	}
-	resolved.Headers = http.Header{}
-	for key, values := range spec.Headers {
-		for _, value := range values {
-			resolvedValue, err := resolveString(value, vars)
-			if err != nil {
-				return resolved, err
-			}
-			resolved.Headers.Add(key, resolvedValue)
-		}
+
+	if resolved.Headers, err = resolveRequestHeaders(spec.Headers, vars); err != nil {
+		return resolved, err
 	}
 
-	if resolved.Auth.Username, err = resolveString(resolved.Auth.Username, vars); err != nil {
+	if err := resolveAuthConfig(runtime, vars, &resolved); err != nil {
 		return resolved, err
-	}
-	if resolved.Auth.Password, err = resolveString(resolved.Auth.Password, vars); err != nil {
-		return resolved, err
-	}
-	if resolved.Auth.Token, err = resolveString(resolved.Auth.Token, vars); err != nil {
-		return resolved, err
-	}
-	if resolved.Auth.Scope, err = resolveString(resolved.Auth.Scope, vars); err != nil {
-		return resolved, err
-	}
-	if resolved.Auth.Resource, err = resolveString(resolved.Auth.Resource, vars); err != nil {
-		return resolved, err
-	}
-	if resolved.Auth.TenantID, err = resolveString(resolved.Auth.TenantID, vars); err != nil {
-		return resolved, err
-	}
-	if resolved.Auth.ClientID, err = resolveString(resolved.Auth.ClientID, vars); err != nil {
-		return resolved, err
-	}
-	if resolved.Auth.ClientSecret, err = resolveString(resolved.Auth.ClientSecret, vars); err != nil {
-		return resolved, err
-	}
-	if resolved.Auth.TokenURL, err = resolveString(resolved.Auth.TokenURL, vars); err != nil {
-		return resolved, err
-	}
-	if resolved.Auth.CertFile != "" {
-		if resolved.Auth.CertFile, err = resolveString(resolved.Auth.CertFile, vars); err != nil {
-			return resolved, err
-		}
-		resolved.Auth.CertFile = resolvePath(runtime.RootDir, resolved.Auth.CertFile)
-	}
-	if resolved.Auth.KeyFile != "" {
-		if resolved.Auth.KeyFile, err = resolveString(resolved.Auth.KeyFile, vars); err != nil {
-			return resolved, err
-		}
-		resolved.Auth.KeyFile = resolvePath(runtime.RootDir, resolved.Auth.KeyFile)
-	}
-	if resolved.Auth.CertFile == "" {
-		resolved.Auth.CertFile = resolved.CertFile
-	}
-	if resolved.Auth.KeyFile == "" {
-		resolved.Auth.KeyFile = resolved.KeyFile
-	}
-	if strings.EqualFold(resolved.Auth.Scheme, "mtls") {
-		switch {
-		case resolved.Auth.CertFile == "":
-			return resolved, errors.New("mtls authentication requires a certificate file")
-		case isPKCS12Path(resolved.Auth.CertFile) && resolved.Auth.Password == "":
-			return resolved, errors.New("mtls authentication with a PKCS#12 certificate requires a password")
-		case !isPKCS12Path(resolved.Auth.CertFile) && resolved.Auth.KeyFile == "":
-			return resolved, errors.New("mtls authentication with a PEM certificate requires a key file")
-		}
 	}
 
 	if resolved.HTTPVersion == "" {
@@ -577,6 +501,108 @@ func resolveRequest(spec RequestSpec, runtime RuntimeConfig, vars resolver) (res
 	}
 
 	return resolved, nil
+}
+
+func resolveRequestHeaders(specHeaders http.Header, vars resolver) (http.Header, error) {
+	headers := http.Header{}
+	for key, values := range specHeaders {
+		for _, value := range values {
+			resolvedValue, err := resolveString(value, vars)
+			if err != nil {
+				return nil, err
+			}
+			headers.Add(key, resolvedValue)
+		}
+	}
+	return headers, nil
+}
+
+func resolveAuthConfig(runtime RuntimeConfig, vars resolver, resolved *resolvedRequest) error {
+	var err error
+	if resolved.Auth.Username, err = resolveString(resolved.Auth.Username, vars); err != nil {
+		return err
+	}
+	if resolved.Auth.Password, err = resolveString(resolved.Auth.Password, vars); err != nil {
+		return err
+	}
+	if resolved.Auth.Token, err = resolveString(resolved.Auth.Token, vars); err != nil {
+		return err
+	}
+	if resolved.Auth.Scope, err = resolveString(resolved.Auth.Scope, vars); err != nil {
+		return err
+	}
+	if resolved.Auth.Resource, err = resolveString(resolved.Auth.Resource, vars); err != nil {
+		return err
+	}
+	if resolved.Auth.TenantID, err = resolveString(resolved.Auth.TenantID, vars); err != nil {
+		return err
+	}
+	if resolved.Auth.ClientID, err = resolveString(resolved.Auth.ClientID, vars); err != nil {
+		return err
+	}
+	if resolved.Auth.ClientSecret, err = resolveString(resolved.Auth.ClientSecret, vars); err != nil {
+		return err
+	}
+	if resolved.Auth.TokenURL, err = resolveString(resolved.Auth.TokenURL, vars); err != nil {
+		return err
+	}
+	if resolved.Auth.CertFile != "" {
+		if resolved.Auth.CertFile, err = resolveString(resolved.Auth.CertFile, vars); err != nil {
+			return err
+		}
+		resolved.Auth.CertFile = resolvePath(runtime.RootDir, resolved.Auth.CertFile)
+	}
+	if resolved.Auth.KeyFile != "" {
+		if resolved.Auth.KeyFile, err = resolveString(resolved.Auth.KeyFile, vars); err != nil {
+			return err
+		}
+		resolved.Auth.KeyFile = resolvePath(runtime.RootDir, resolved.Auth.KeyFile)
+	}
+	if resolved.Auth.CertFile == "" {
+		resolved.Auth.CertFile = resolved.CertFile
+	}
+	if resolved.Auth.KeyFile == "" {
+		resolved.Auth.KeyFile = resolved.KeyFile
+	}
+	if strings.EqualFold(resolved.Auth.Scheme, "mtls") {
+		switch {
+		case resolved.Auth.CertFile == "":
+			return errors.New("mtls authentication requires a certificate file")
+		case isPKCS12Path(resolved.Auth.CertFile) && resolved.Auth.Password == "":
+			return errors.New("mtls authentication with a PKCS#12 certificate requires a password")
+		case !isPKCS12Path(resolved.Auth.CertFile) && resolved.Auth.KeyFile == "":
+			return errors.New("mtls authentication with a PEM certificate requires a key file")
+		}
+	}
+	return nil
+}
+
+func resolveRequestTLS(spec RequestSpec, runtime RuntimeConfig, vars resolver, resolved *resolvedRequest) error {
+	var err error
+	resolved.CertFile, err = chooseResolvedPath(runtime.RootDir, runtime.Config.CertFile, vars)
+	if err != nil {
+		return err
+	}
+	resolved.KeyFile, err = chooseResolvedPath(runtime.RootDir, runtime.Config.KeyFile, vars)
+	if err != nil {
+		return err
+	}
+	if resolved.SelfSignedCertFile, err = chooseResolvedPath(runtime.RootDir, runtime.SelfSignedCertFile, spec.SelfSignedCertFile, runtime.Config.SelfSignedCertFile, vars); err != nil {
+		return err
+	}
+	if resolved.Auth.CACertFile != "" {
+		authCACert, err := resolveString(resolved.Auth.CACertFile, vars)
+		if err != nil {
+			return err
+		}
+		resolved.Auth.CACertFile = resolvePath(runtime.RootDir, authCACert)
+	}
+	// An explicit request-level `# @ca-cert` directive always wins; otherwise
+	// an auth-level CA overrides the global config default.
+	if resolved.CACertFile, err = chooseResolvedPath(runtime.RootDir, spec.CACertFile, resolved.Auth.CACertFile, runtime.Config.CACertFile, vars); err != nil {
+		return err
+	}
+	return nil
 }
 
 func chooseResolvedValue(values ...any) (string, error) {
