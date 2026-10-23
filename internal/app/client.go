@@ -1103,23 +1103,19 @@ func getAzureToken(ctx context.Context, resolved resolvedRequest) (string, error
 	}
 	defer resp.Body.Close()
 
-	// The token endpoint is user-configurable and therefore untrusted; cap
-	// how much of its response we buffer and never echo response bodies for
-	// failures, since they could otherwise be used to exhaust memory or leak
-	// credentials into logs.
-	const maxTokenResponseSize = 1 << 20
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxTokenResponseSize))
-	if err != nil {
-		return "", err
-	}
 	if resp.StatusCode >= 300 {
 		return "", fmt.Errorf("azuread token request failed with status %s", resp.Status)
 	}
 
+	// The token endpoint is user-configurable and therefore untrusted; cap
+	// how much of its response we read and never echo response bodies for
+	// failures, since they could otherwise be used to exhaust memory or leak
+	// credentials into logs.
+	const maxTokenResponseSize = 1 << 20
 	payload := struct {
 		AccessToken string `json:"access_token"`
 	}{}
-	if err := json.Unmarshal(body, &payload); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxTokenResponseSize)).Decode(&payload); err != nil {
 		return "", err
 	}
 	if payload.AccessToken == "" {
