@@ -32,11 +32,37 @@ import (
 )
 
 func executeRequests(ctx context.Context, plans []executionPlan, stdout io.Writer) error {
+	document, err := setupExecutionRuntime(plans)
+	if err != nil {
+		return err
+	}
+
+	successes := 0
+	failures := 0
+
+	for i, plan := range plans {
+		result, err := executeRequest(ctx, plan)
+		if err != nil {
+			plan.Runtime.Logger.Errorf("request %q failed: %v", safeRequestLabel(plan.Request.Name, plan.Request.URL), sanitizeError(err, plan.Request.URL))
+			return err
+		}
+		if err := handleRequestResult(i, plan, result, document, stdout); err != nil {
+			return err
+		}
+		if result.resp.StatusCode < http.StatusBadRequest {
+			successes++
+		} else {
+			failures++
+		}
+	}
+
+	return finalizeOutput(stdout, plans, document, successes, failures)
+}
+
+func setupExecutionRuntime(plans []executionPlan) (*jsonDocument, error) {
 	var jar http.CookieJar
 	var outputFiles *outputFileState
 	var document *jsonDocument
-	successes := 0
-	failures := 0
 	if len(plans) > 0 {
 		jar = plans[0].Runtime.CookieJar
 		outputFiles = plans[0].Runtime.outputFiles
@@ -51,7 +77,7 @@ func executeRequests(ctx context.Context, plans []executionPlan, stdout io.Write
 		var err error
 		jar, err = newCookieJar()
 		if err != nil {
-			return err
+			return nil, err
 		}
 	}
 	if outputFiles == nil {
@@ -63,36 +89,28 @@ func executeRequests(ctx context.Context, plans []executionPlan, stdout io.Write
 		plans[i].Runtime.outputFiles = outputFiles
 	}
 
-	for i, plan := range plans {
-		result, err := executeRequest(ctx, plan)
-		if err != nil {
-			plan.Runtime.Logger.Errorf("request %q failed: %v", safeRequestLabel(plan.Request.Name, plan.Request.URL), sanitizeError(err, plan.Request.URL))
+	return document, nil
+}
+
+func handleRequestResult(index int, plan executionPlan, result responseResult, document *jsonDocument, stdout io.Writer) error {
+	if document != nil {
+		document.add(plan.Request, result)
+		return nil
+	}
+	if index > 0 {
+		if _, err := fmt.Fprintln(stdout); err != nil {
 			return err
 		}
-		if document != nil {
-			document.add(plan.Request, result)
-		} else {
-			if i > 0 {
-				if _, err := fmt.Fprintln(stdout); err != nil {
-					return err
-				}
-			}
-			if err := writeResponse(stdout, plan.Request, result.resp, result.body, result.outputFile, plan.Runtime.Colorizer, responseMetadata{
-				totalBytes:       result.totalBytes,
-				previewTruncated: result.previewTruncated,
-			}); err != nil {
-				return err
-			}
-		}
-		if result.resp.StatusCode < http.StatusBadRequest {
-			successes++
-		} else {
-			failures++
-		}
 	}
+	return writeResponse(stdout, plan.Request, result.resp, result.body, result.outputFile, plan.Runtime.Colorizer, responseMetadata{
+		totalBytes:       result.totalBytes,
+		previewTruncated: result.previewTruncated,
+	})
+}
 
+func finalizeOutput(stdout io.Writer, plans []executionPlan, document *jsonDocument, successes, failures int) error {
 	if document != nil {
-		if plans[0].Runtime.jsonOutput == nil {
+		if len(plans) > 0 && plans[0].Runtime.jsonOutput == nil {
 			return json.NewEncoder(stdout).Encode(document)
 		}
 		return nil
@@ -102,17 +120,15 @@ func executeRequests(ctx context.Context, plans []executionPlan, stdout io.Write
 		if colorizer == nil {
 			colorizer = NewColorizer(false)
 		}
-		if _, err := fmt.Fprintf(
+		_, err := fmt.Fprintf(
 			stdout,
 			"\n%s\n%s\n%s\n",
 			colorizer.Title("### Summary"),
 			colorizer.Status(fmt.Sprintf("Successful (<400): %d", successes), http.StatusOK),
 			colorizer.Status(fmt.Sprintf("Failed (>=400): %d", failures), http.StatusBadRequest),
-		); err != nil {
-			return err
-		}
+		)
+		return err
 	}
-
 	return nil
 }
 
