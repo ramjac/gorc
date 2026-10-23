@@ -200,33 +200,10 @@ func executeRequest(ctx context.Context, plan executionPlan) (responseResult, er
 	logger.Infof("executing request %q", safeRequestLabel(resolved.Name, resolved.URL))
 	logger.Debugf("resolved request method=%s url=%s http_version=%s", resolved.Method, safeURL(resolved.URL), resolved.HTTPVersion)
 
-	bodyBytes, err := buildBody(resolved)
+	request, err := prepareHTTPRequest(ctx, resolved, logger)
 	if err != nil {
 		return responseResult{outputFile: resolved.OutputFile}, err
 	}
-	if len(bodyBytes) > 0 {
-		logger.Debugf("prepared request body bytes=%d", len(bodyBytes))
-	}
-
-	request, err := http.NewRequestWithContext(ctx, resolved.Method, resolved.URL, bytes.NewReader(bodyBytes))
-	if err != nil {
-		return responseResult{outputFile: resolved.OutputFile}, sanitizeError(err, resolved.URL)
-	}
-	request.GetBody = func() (io.ReadCloser, error) {
-		return io.NopCloser(bytes.NewReader(bodyBytes)), nil
-	}
-	for key, values := range resolved.Headers {
-		if strings.EqualFold(key, "Host") {
-			if len(values) > 0 {
-				request.Host = values[len(values)-1]
-			}
-			continue
-		}
-		for _, value := range values {
-			request.Header.Add(key, value)
-		}
-	}
-	request = withTrace(request, logger)
 
 	transport, closer, err := buildTransport(resolved)
 	if err != nil {
@@ -240,37 +217,9 @@ func executeRequest(ctx context.Context, plan executionPlan) (responseResult, er
 	}
 
 	var roundTripper http.RoundTripper = loggingRoundTripper{base: transport, logger: logger}
-	switch strings.ToLower(resolved.Auth.Scheme) {
-	case "basic":
-		logger.Debugf("configuring basic authentication")
-		request.SetBasicAuth(resolved.Auth.Username, resolved.Auth.Password)
-	case "bearer":
-		logger.Debugf("configuring bearer authentication")
-		request.Header.Set("Authorization", "Bearer "+resolved.Auth.Token)
-	case "digest":
-		logger.Debugf("configuring digest authentication handshake")
-		roundTripper = &digest.Transport{
-			Username:  resolved.Auth.Username,
-			Password:  resolved.Auth.Password,
-			Transport: roundTripper,
-			Jar:       runtime.CookieJar,
-		}
-	case "ntlm":
-		logger.Debugf("configuring NTLM authentication handshake")
-		request.SetBasicAuth(resolved.Auth.Username, resolved.Auth.Password)
-		roundTripper = ntlmssp.Negotiator{RoundTripper: roundTripper}
-	case "azuread":
-		logger.Debugf("requesting Azure AD access token")
-		token, err := getAzureToken(ctx, resolved)
-		if err != nil {
-			return responseResult{outputFile: resolved.OutputFile}, err
-		}
-		request.Header.Set("Authorization", "Bearer "+token)
-	case "":
-	case "mtls":
-		logger.Debugf("using mTLS client certificate authentication")
-	default:
-		return responseResult{outputFile: resolved.OutputFile}, fmt.Errorf("unsupported auth scheme %q", resolved.Auth.Scheme)
+	roundTripper, err = applyAuthScheme(ctx, resolved, runtime, request, roundTripper)
+	if err != nil {
+		return responseResult{outputFile: resolved.OutputFile}, err
 	}
 
 	client := &http.Client{
@@ -301,6 +250,79 @@ func executeRequest(ctx context.Context, plan executionPlan) (responseResult, er
 	}
 	defer resp.Body.Close()
 
+	return readResponseBody(resp, resolved, runtime, started)
+}
+
+func prepareHTTPRequest(ctx context.Context, resolved resolvedRequest, logger *Logger) (*http.Request, error) {
+	bodyBytes, err := buildBody(resolved)
+	if err != nil {
+		return nil, err
+	}
+	if len(bodyBytes) > 0 {
+		logger.Debugf("prepared request body bytes=%d", len(bodyBytes))
+	}
+
+	request, err := http.NewRequestWithContext(ctx, resolved.Method, resolved.URL, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, sanitizeError(err, resolved.URL)
+	}
+	request.GetBody = func() (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(bodyBytes)), nil
+	}
+	for key, values := range resolved.Headers {
+		if strings.EqualFold(key, "Host") {
+			if len(values) > 0 {
+				request.Host = values[len(values)-1]
+			}
+			continue
+		}
+		for _, value := range values {
+			request.Header.Add(key, value)
+		}
+	}
+	return withTrace(request, logger), nil
+}
+
+func applyAuthScheme(ctx context.Context, resolved resolvedRequest, runtime RuntimeConfig, request *http.Request, transport http.RoundTripper) (http.RoundTripper, error) {
+	logger := runtime.Logger
+	roundTripper := transport
+	switch strings.ToLower(resolved.Auth.Scheme) {
+	case "basic":
+		logger.Debugf("configuring basic authentication")
+		request.SetBasicAuth(resolved.Auth.Username, resolved.Auth.Password)
+	case "bearer":
+		logger.Debugf("configuring bearer authentication")
+		request.Header.Set("Authorization", "Bearer "+resolved.Auth.Token)
+	case "digest":
+		logger.Debugf("configuring digest authentication handshake")
+		roundTripper = &digest.Transport{
+			Username:  resolved.Auth.Username,
+			Password:  resolved.Auth.Password,
+			Transport: roundTripper,
+			Jar:       runtime.CookieJar,
+		}
+	case "ntlm":
+		logger.Debugf("configuring NTLM authentication handshake")
+		request.SetBasicAuth(resolved.Auth.Username, resolved.Auth.Password)
+		roundTripper = ntlmssp.Negotiator{RoundTripper: roundTripper}
+	case "azuread":
+		logger.Debugf("requesting Azure AD access token")
+		token, err := getAzureToken(ctx, resolved)
+		if err != nil {
+			return nil, err
+		}
+		request.Header.Set("Authorization", "Bearer "+token)
+	case "":
+	case "mtls":
+		logger.Debugf("using mTLS client certificate authentication")
+	default:
+		return nil, fmt.Errorf("unsupported auth scheme %q", resolved.Auth.Scheme)
+	}
+	return roundTripper, nil
+}
+
+func readResponseBody(resp *http.Response, resolved resolvedRequest, runtime RuntimeConfig, started time.Time) (responseResult, error) {
+	logger := runtime.Logger
 	if resolved.OutputFile != "" {
 		outputFiles := runtime.outputFiles
 		if outputFiles == nil {
