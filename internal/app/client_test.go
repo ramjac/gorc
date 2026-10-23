@@ -540,6 +540,63 @@ func TestResolveRequestRejectsMTLSWithoutEffectiveCertificatePair(t *testing.T) 
 	}
 }
 
+func TestReadCappedBody(t *testing.T) {
+	t.Parallel()
+
+	t.Run("under limit", func(t *testing.T) {
+		t.Parallel()
+		input := "hello world"
+		body, totalBytes, truncated, err := readCappedBody(strings.NewReader(input), 20)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(body) != input {
+			t.Fatalf("expected %q, got %q", input, string(body))
+		}
+		if totalBytes != len(input) {
+			t.Fatalf("expected totalBytes %d, got %d", len(input), totalBytes)
+		}
+		if truncated {
+			t.Fatal("expected truncated to be false")
+		}
+	})
+
+	t.Run("over limit", func(t *testing.T) {
+		t.Parallel()
+		input := "hello world!"
+		body, totalBytes, truncated, err := readCappedBody(strings.NewReader(input), 5)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(body) != "hello" {
+			t.Fatalf("expected capped body 'hello', got %q", string(body))
+		}
+		if totalBytes != len(input) {
+			t.Fatalf("expected totalBytes %d, got %d", len(input), totalBytes)
+		}
+		if !truncated {
+			t.Fatal("expected truncated to be true")
+		}
+	})
+
+	t.Run("error reading body", func(t *testing.T) {
+		t.Parallel()
+		errReader := &errTestReader{err: errors.New("read error")}
+		_, _, _, err := readCappedBody(errReader, 10)
+		if err == nil || err.Error() != "read error" {
+			t.Fatalf("expected read error, got %v", err)
+		}
+	})
+}
+
+type errTestReader struct {
+	err error
+}
+
+func (r *errTestReader) Read(p []byte) (int, error) {
+	return 0, r.err
+}
+
 func TestResolveRequestAcceptsPasswordProtectedPKCS12Certificate(t *testing.T) {
 	t.Parallel()
 

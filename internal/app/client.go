@@ -332,12 +332,17 @@ func readCappedBody(reader io.Reader, limit int) ([]byte, int, bool, error) {
 	if err != nil {
 		return nil, len(body), false, err
 	}
-	remaining, err := io.Copy(io.Discard, reader)
+	remaining, err := drainReader(reader)
 	if err != nil {
 		return nil, len(body) + int(remaining), false, err
 	}
 	totalBytes := len(body) + int(remaining)
 	return body, totalBytes, remaining > 0, nil
+}
+
+// drainReader discards and counts remaining bytes from reader.
+func drainReader(reader io.Reader) (int64, error) {
+	return io.Copy(io.Discard, reader)
 }
 
 // newCookieJar creates the shared cookie jar used across a CLI run. Cookies
