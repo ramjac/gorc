@@ -449,6 +449,35 @@ func resolveRequest(spec RequestSpec, runtime RuntimeConfig, vars resolver) (res
 		resolved.Timeout = 30 * time.Second
 	}
 
+	var err error
+	if resolved, err = resolveRequestOptions(resolved, spec, runtime, vars); err != nil {
+		return resolved, err
+	}
+	if resolved.Headers, err = resolveHeaders(spec.Headers, vars); err != nil {
+		return resolved, err
+	}
+
+	if resolved.Auth, err = resolveAuthConfig(resolved.Auth, resolved.CertFile, resolved.KeyFile, runtime.RootDir, vars); err != nil {
+		return resolved, err
+	}
+	if err = validateMTLS(resolved.Auth); err != nil {
+		return resolved, err
+	}
+
+	if resolved.HTTPVersion == "" {
+		resolved.HTTPVersion = "auto"
+	}
+	if !isSupportedHTTPVersion(resolved.HTTPVersion) {
+		return resolved, fmt.Errorf("unsupported http version %q", resolved.HTTPVersion)
+	}
+	if runtime.Logger != nil && runtime.Logger.Enabled(LogLevelDebug) {
+		runtime.Logger.Debugf("resolved request config name=%q proxy=%q output_file=%q body_file=%q", safeRequestLabel(resolved.Name, resolved.URL), safeURL(resolved.Proxy), resolved.OutputFile, resolved.BodyFile)
+	}
+
+	return resolved, nil
+}
+
+func resolveRequestOptions(resolved resolvedRequest, spec RequestSpec, runtime RuntimeConfig, vars resolver) (resolvedRequest, error) {
 	resolved.Method = spec.Method
 	var err error
 	if resolved.URL, err = resolveString(spec.URL, vars); err != nil {
@@ -499,84 +528,85 @@ func resolveRequest(spec RequestSpec, runtime RuntimeConfig, vars resolver) (res
 	} else if spec.Insecure {
 		resolved.Insecure = true
 	}
-	resolved.Headers = http.Header{}
-	for key, values := range spec.Headers {
+	return resolved, nil
+}
+
+func resolveAuthConfig(auth AuthConfig, defaultCertFile, defaultKeyFile, rootDir string, vars resolver) (AuthConfig, error) {
+	var err error
+	if auth.Username, err = resolveString(auth.Username, vars); err != nil {
+		return auth, err
+	}
+	if auth.Password, err = resolveString(auth.Password, vars); err != nil {
+		return auth, err
+	}
+	if auth.Token, err = resolveString(auth.Token, vars); err != nil {
+		return auth, err
+	}
+	if auth.Scope, err = resolveString(auth.Scope, vars); err != nil {
+		return auth, err
+	}
+	if auth.Resource, err = resolveString(auth.Resource, vars); err != nil {
+		return auth, err
+	}
+	if auth.TenantID, err = resolveString(auth.TenantID, vars); err != nil {
+		return auth, err
+	}
+	if auth.ClientID, err = resolveString(auth.ClientID, vars); err != nil {
+		return auth, err
+	}
+	if auth.ClientSecret, err = resolveString(auth.ClientSecret, vars); err != nil {
+		return auth, err
+	}
+	if auth.TokenURL, err = resolveString(auth.TokenURL, vars); err != nil {
+		return auth, err
+	}
+	if auth.CertFile != "" {
+		if auth.CertFile, err = resolveString(auth.CertFile, vars); err != nil {
+			return auth, err
+		}
+		auth.CertFile = resolvePath(rootDir, auth.CertFile)
+	}
+	if auth.KeyFile != "" {
+		if auth.KeyFile, err = resolveString(auth.KeyFile, vars); err != nil {
+			return auth, err
+		}
+		auth.KeyFile = resolvePath(rootDir, auth.KeyFile)
+	}
+	if auth.CertFile == "" {
+		auth.CertFile = defaultCertFile
+	}
+	if auth.KeyFile == "" {
+		auth.KeyFile = defaultKeyFile
+	}
+	return auth, nil
+}
+
+func validateMTLS(auth AuthConfig) error {
+	if strings.EqualFold(auth.Scheme, "mtls") {
+		switch {
+		case auth.CertFile == "":
+			return errors.New("mtls authentication requires a certificate file")
+		case isPKCS12Path(auth.CertFile) && auth.Password == "":
+			return errors.New("mtls authentication with a PKCS#12 certificate requires a password")
+		case !isPKCS12Path(auth.CertFile) && auth.KeyFile == "":
+			return errors.New("mtls authentication with a PEM certificate requires a key file")
+		}
+	}
+	return nil
+}
+
+func resolveHeaders(specHeaders http.Header, vars resolver) (http.Header, error) {
+	headers := http.Header{}
+	for key, values := range specHeaders {
 		for _, value := range values {
 			resolvedValue, err := resolveString(value, vars)
 			if err != nil {
-				return resolved, err
+				return nil, err
 			}
-			resolved.Headers.Add(key, resolvedValue)
+			headers.Add(key, resolvedValue)
 		}
 	}
-
-	if resolved.Auth.Username, err = resolveString(resolved.Auth.Username, vars); err != nil {
-		return resolved, err
-	}
-	if resolved.Auth.Password, err = resolveString(resolved.Auth.Password, vars); err != nil {
-		return resolved, err
-	}
-	if resolved.Auth.Token, err = resolveString(resolved.Auth.Token, vars); err != nil {
-		return resolved, err
-	}
-	if resolved.Auth.Scope, err = resolveString(resolved.Auth.Scope, vars); err != nil {
-		return resolved, err
-	}
-	if resolved.Auth.Resource, err = resolveString(resolved.Auth.Resource, vars); err != nil {
-		return resolved, err
-	}
-	if resolved.Auth.TenantID, err = resolveString(resolved.Auth.TenantID, vars); err != nil {
-		return resolved, err
-	}
-	if resolved.Auth.ClientID, err = resolveString(resolved.Auth.ClientID, vars); err != nil {
-		return resolved, err
-	}
-	if resolved.Auth.ClientSecret, err = resolveString(resolved.Auth.ClientSecret, vars); err != nil {
-		return resolved, err
-	}
-	if resolved.Auth.TokenURL, err = resolveString(resolved.Auth.TokenURL, vars); err != nil {
-		return resolved, err
-	}
-	if resolved.Auth.CertFile != "" {
-		if resolved.Auth.CertFile, err = resolveString(resolved.Auth.CertFile, vars); err != nil {
-			return resolved, err
-		}
-		resolved.Auth.CertFile = resolvePath(runtime.RootDir, resolved.Auth.CertFile)
-	}
-	if resolved.Auth.KeyFile != "" {
-		if resolved.Auth.KeyFile, err = resolveString(resolved.Auth.KeyFile, vars); err != nil {
-			return resolved, err
-		}
-		resolved.Auth.KeyFile = resolvePath(runtime.RootDir, resolved.Auth.KeyFile)
-	}
-	if resolved.Auth.CertFile == "" {
-		resolved.Auth.CertFile = resolved.CertFile
-	}
-	if resolved.Auth.KeyFile == "" {
-		resolved.Auth.KeyFile = resolved.KeyFile
-	}
-	if strings.EqualFold(resolved.Auth.Scheme, "mtls") {
-		switch {
-		case resolved.Auth.CertFile == "":
-			return resolved, errors.New("mtls authentication requires a certificate file")
-		case isPKCS12Path(resolved.Auth.CertFile) && resolved.Auth.Password == "":
-			return resolved, errors.New("mtls authentication with a PKCS#12 certificate requires a password")
-		case !isPKCS12Path(resolved.Auth.CertFile) && resolved.Auth.KeyFile == "":
-			return resolved, errors.New("mtls authentication with a PEM certificate requires a key file")
-		}
-	}
-
-	if resolved.HTTPVersion == "" {
-		resolved.HTTPVersion = "auto"
-	}
-	if !isSupportedHTTPVersion(resolved.HTTPVersion) {
-		return resolved, fmt.Errorf("unsupported http version %q", resolved.HTTPVersion)
-	}
-	if runtime.Logger != nil && runtime.Logger.Enabled(LogLevelDebug) {
-		runtime.Logger.Debugf("resolved request config name=%q proxy=%q output_file=%q body_file=%q", safeRequestLabel(resolved.Name, resolved.URL), safeURL(resolved.Proxy), resolved.OutputFile, resolved.BodyFile)
-	}
-
-	return resolved, nil
+	return headers, nil
 }
 
 func chooseResolvedValue(values ...any) (string, error) {
