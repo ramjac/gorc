@@ -366,11 +366,7 @@ func (s *outputFileState) openFile(path string) (*os.File, error) {
 		flags = os.O_CREATE | os.O_WRONLY | os.O_APPEND
 	}
 	file, err := os.OpenFile(path, flags, 0o644)
-	if err != nil {
-		return nil, err
-	}
-	s.initialized[path] = struct{}{}
-	return file, nil
+	return file, err
 }
 
 func (s *outputFileState) write(path string, body []byte) error {
@@ -382,7 +378,11 @@ func (s *outputFileState) write(path string, body []byte) error {
 		_ = file.Close()
 		return err
 	}
-	return file.Close()
+	if err := file.Close(); err != nil {
+		return err
+	}
+	s.initialized[path] = struct{}{}
+	return nil
 }
 
 const maxResponsePreviewSize = 1 << 20
@@ -401,6 +401,7 @@ func (s *outputFileState) writeFromReader(path string, reader io.Reader) ([]byte
 	if closeErr != nil {
 		return nil, int(totalBytes), false, closeErr
 	}
+	s.initialized[path] = struct{}{}
 	return preview.Bytes(), int(totalBytes), int(totalBytes) > len(preview.Bytes()), nil
 }
 
