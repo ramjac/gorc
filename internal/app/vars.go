@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-var variablePattern = regexp.MustCompile(`\{\{\s*([^{}]+?)\s*\}\}`)
+var variablePattern = regexp.MustCompile(`\{\{([^{}]+)\}\}`)
 
 type resolver struct {
 	RequestVars map[string]string
@@ -18,10 +18,16 @@ type resolver struct {
 }
 
 func resolveString(input string, vars resolver) (string, error) {
+	if !strings.Contains(input, "{{") {
+		return input, nil
+	}
 	previous := input
 	for i := 0; i < 10; i++ {
+		if !strings.Contains(previous, "{{") {
+			return previous, nil
+		}
 		replaced := variablePattern.ReplaceAllStringFunc(previous, func(match string) string {
-			key := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(match, "{{"), "}}"))
+			key := strings.TrimSpace(match[2 : len(match)-2])
 			value, ok := resolveVariable(key, vars)
 			if !ok {
 				return match
@@ -36,30 +42,32 @@ func resolveString(input string, vars resolver) (string, error) {
 		}
 		previous = replaced
 	}
-	if !variablePattern.MatchString(previous) {
+	if !strings.Contains(previous, "{{") {
 		return previous, nil
 	}
 	return previous, fmt.Errorf("variable expansion exceeded recursion limit")
 }
 
 func resolveVariable(key string, vars resolver) (string, bool) {
-	fields := strings.Fields(key)
-	if len(fields) == 2 {
-		switch fields[0] {
-		case "$env":
-			return os.LookupEnv(fields[1])
-		case "$cli":
-			value, ok := vars.CLIVars[fields[1]]
-			return value, ok
-		case "$config":
-			value, ok := vars.ConfigVars[fields[1]]
-			return value, ok
-		case "$file":
-			value, ok := vars.FileVars[fields[1]]
-			return value, ok
-		case "$request":
-			value, ok := vars.RequestVars[fields[1]]
-			return value, ok
+	if strings.HasPrefix(key, "$") {
+		fields := strings.Fields(key)
+		if len(fields) == 2 {
+			switch fields[0] {
+			case "$env":
+				return os.LookupEnv(fields[1])
+			case "$cli":
+				value, ok := vars.CLIVars[fields[1]]
+				return value, ok
+			case "$config":
+				value, ok := vars.ConfigVars[fields[1]]
+				return value, ok
+			case "$file":
+				value, ok := vars.FileVars[fields[1]]
+				return value, ok
+			case "$request":
+				value, ok := vars.RequestVars[fields[1]]
+				return value, ok
+			}
 		}
 	}
 
@@ -81,8 +89,11 @@ func resolveVariable(key string, vars resolver) (string, bool) {
 	if value, ok := os.LookupEnv(key); ok {
 		return value, true
 	}
-	if value, ok := os.LookupEnv(strings.ToUpper(strings.ReplaceAll(key, "-", "_"))); ok {
-		return value, true
+	upperKey := strings.ToUpper(strings.ReplaceAll(key, "-", "_"))
+	if upperKey != key {
+		if value, ok := os.LookupEnv(upperKey); ok {
+			return value, true
+		}
 	}
 	return "", false
 }
