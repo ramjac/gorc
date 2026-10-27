@@ -362,15 +362,20 @@ func newOutputFileState() *outputFileState {
 	return &outputFileState{initialized: make(map[string]struct{})}
 }
 
-func (s *outputFileState) write(path string, body []byte) error {
+func (s *outputFileState) openFile(path string) (*os.File, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
+		return nil, err
 	}
 	flags := os.O_CREATE | os.O_WRONLY | os.O_TRUNC
 	if _, ok := s.initialized[path]; ok {
 		flags = os.O_CREATE | os.O_WRONLY | os.O_APPEND
 	}
 	file, err := os.OpenFile(path, flags, 0o644)
+	return file, err
+}
+
+func (s *outputFileState) write(path string, body []byte) error {
+	file, err := s.openFile(path)
 	if err != nil {
 		return err
 	}
@@ -388,14 +393,7 @@ func (s *outputFileState) write(path string, body []byte) error {
 const maxResponsePreviewSize = 1 << 20
 
 func (s *outputFileState) writeFromReader(path string, reader io.Reader) ([]byte, int, bool, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return nil, 0, false, err
-	}
-	flags := os.O_CREATE | os.O_WRONLY | os.O_TRUNC
-	if _, ok := s.initialized[path]; ok {
-		flags = os.O_CREATE | os.O_WRONLY | os.O_APPEND
-	}
-	file, err := os.OpenFile(path, flags, 0o644)
+	file, err := s.openFile(path)
 	if err != nil {
 		return nil, 0, false, err
 	}
