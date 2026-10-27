@@ -414,13 +414,14 @@ type previewWriter struct {
 
 func (w *previewWriter) Write(p []byte) (int, error) {
 	written := len(p)
-	if w.buffer.Len() < w.limit {
-		remaining := w.limit - w.buffer.Len()
-		if len(p) > remaining {
-			p = p[:remaining]
-		}
-		_, _ = w.buffer.Write(p)
+	remaining := w.limit - w.buffer.Len()
+	if remaining <= 0 {
+		return written, nil
 	}
+	if len(p) > remaining {
+		p = p[:remaining]
+	}
+	_, _ = w.buffer.Write(p)
 	return written, nil
 }
 
