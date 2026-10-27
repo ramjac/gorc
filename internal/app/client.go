@@ -332,12 +332,17 @@ func readCappedBody(reader io.Reader, limit int) ([]byte, int, bool, error) {
 	if err != nil {
 		return nil, len(body), false, err
 	}
-	remaining, err := io.Copy(io.Discard, reader)
+	remaining, err := drainReader(reader)
 	if err != nil {
 		return nil, len(body) + int(remaining), false, err
 	}
 	totalBytes := len(body) + int(remaining)
 	return body, totalBytes, remaining > 0, nil
+}
+
+// drainReader discards and counts remaining bytes from reader.
+func drainReader(reader io.Reader) (int64, error) {
+	return io.Copy(io.Discard, reader)
 }
 
 // newCookieJar creates the shared cookie jar used across a CLI run. Cookies
@@ -412,13 +417,14 @@ type previewWriter struct {
 
 func (w *previewWriter) Write(p []byte) (int, error) {
 	written := len(p)
-	if w.buffer.Len() < w.limit {
-		remaining := w.limit - w.buffer.Len()
-		if len(p) > remaining {
-			p = p[:remaining]
-		}
-		_, _ = w.buffer.Write(p)
+	remaining := w.limit - w.buffer.Len()
+	if remaining <= 0 {
+		return written, nil
 	}
+	if len(p) > remaining {
+		p = p[:remaining]
+	}
+	_, _ = w.buffer.Write(p)
 	return written, nil
 }
 
@@ -643,46 +649,30 @@ func overlayAuth(base, override AuthConfig) AuthConfig {
 	if override.Scheme != "" && base.Scheme != "" && !strings.EqualFold(override.Scheme, base.Scheme) {
 		base = AuthConfig{}
 	}
-	if override.Scheme != "" {
-		base.Scheme = override.Scheme
-	}
-	if override.Username != "" {
-		base.Username = override.Username
-	}
-	if override.Password != "" {
-		base.Password = override.Password
-	}
-	if override.Token != "" {
-		base.Token = override.Token
-	}
-	if override.CertFile != "" {
-		base.CertFile = override.CertFile
-	}
-	if override.KeyFile != "" {
-		base.KeyFile = override.KeyFile
-	}
-	if override.CACertFile != "" {
-		base.CACertFile = override.CACertFile
-	}
-	if override.TenantID != "" {
-		base.TenantID = override.TenantID
-	}
-	if override.ClientID != "" {
-		base.ClientID = override.ClientID
-	}
-	if override.ClientSecret != "" {
-		base.ClientSecret = override.ClientSecret
-	}
-	if override.Scope != "" {
-		base.Scope = override.Scope
-	}
-	if override.Resource != "" {
-		base.Resource = override.Resource
-	}
-	if override.TokenURL != "" {
-		base.TokenURL = override.TokenURL
-	}
+	overlayFields(&base, &override)
 	return base
+}
+
+func overlayFields(base, override *AuthConfig) {
+	overrideField(&base.Scheme, override.Scheme)
+	overrideField(&base.Username, override.Username)
+	overrideField(&base.Password, override.Password)
+	overrideField(&base.Token, override.Token)
+	overrideField(&base.CertFile, override.CertFile)
+	overrideField(&base.KeyFile, override.KeyFile)
+	overrideField(&base.CACertFile, override.CACertFile)
+	overrideField(&base.TenantID, override.TenantID)
+	overrideField(&base.ClientID, override.ClientID)
+	overrideField(&base.ClientSecret, override.ClientSecret)
+	overrideField(&base.Scope, override.Scope)
+	overrideField(&base.Resource, override.Resource)
+	overrideField(&base.TokenURL, override.TokenURL)
+}
+
+func overrideField(dst *string, src string) {
+	if src != "" {
+		*dst = src
+	}
 }
 
 func isEmptyAuth(auth AuthConfig) bool {
