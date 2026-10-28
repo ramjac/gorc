@@ -139,6 +139,12 @@ type jsonSummary struct {
 }
 
 func (document *jsonDocument) add(req RequestSpec, result responseResult) {
+	entry := buildJSONResponse(req, result)
+	document.Responses = append(document.Responses, entry)
+	document.updateSummary(entry.StatusCode)
+}
+
+func buildJSONResponse(req RequestSpec, result responseResult) jsonResponse {
 	resp := result.resp
 	mediaType, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type"))
 	text := isTextualResponse(mediaType)
@@ -155,21 +161,25 @@ func (document *jsonDocument) add(req RequestSpec, result responseResult) {
 	if text {
 		entry.Body = string(result.body)
 	}
-	document.Responses = append(document.Responses, entry)
-	if len(document.Responses) > 1 {
-		if document.Summary == nil {
-			document.Summary = &jsonSummary{}
-			if document.Responses[0].StatusCode < http.StatusBadRequest {
-				document.Summary.Successful++
-			} else {
-				document.Summary.Failed++
-			}
-		}
-		if resp.StatusCode < http.StatusBadRequest {
-			document.Summary.Successful++
-		} else {
-			document.Summary.Failed++
-		}
+	return entry
+}
+
+func (document *jsonDocument) updateSummary(statusCode int) {
+	if len(document.Responses) <= 1 {
+		return
+	}
+	if document.Summary == nil {
+		document.Summary = &jsonSummary{}
+		document.recordStatus(document.Responses[0].StatusCode)
+	}
+	document.recordStatus(statusCode)
+}
+
+func (document *jsonDocument) recordStatus(statusCode int) {
+	if statusCode < http.StatusBadRequest {
+		document.Summary.Successful++
+	} else {
+		document.Summary.Failed++
 	}
 }
 
