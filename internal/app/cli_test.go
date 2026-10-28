@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -599,5 +600,33 @@ func TestSelectRequestsRejectsConflictingAllSelectors(t *testing.T) {
 	}
 	if _, err := selectRequests(requests, RunOptions{All: true, Indices: []int{1}}); err == nil {
 		t.Fatal("expected --all and --index conflict to be rejected")
+	}
+}
+
+func BenchmarkSelectRequestsByName(b *testing.B) {
+	numRequests := 1000
+	numSelections := 500
+	requests := make([]RequestSpec, numRequests)
+	namesToSelect := make([]string, numSelections)
+
+	for i := 0; i < numRequests; i++ {
+		name := "req_" + strconv.Itoa(i)
+		requests[i] = RequestSpec{Name: name}
+		if i < numSelections {
+			namesToSelect[i] = name
+		}
+	}
+
+	opts := RunOptions{
+		Names: namesToSelect,
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		selected, err := selectRequests(requests, opts)
+		if err != nil || len(selected) != numSelections {
+			b.Fatalf("benchmark failed: err=%v, len=%d", err, len(selected))
+		}
 	}
 }

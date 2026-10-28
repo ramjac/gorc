@@ -155,6 +155,12 @@ type jsonSummary struct {
 }
 
 func (document *jsonDocument) add(req RequestSpec, result responseResult) {
+	entry := buildJSONResponse(req, result)
+	document.Responses = append(document.Responses, entry)
+	document.updateSummary(entry.StatusCode)
+}
+
+func buildJSONResponse(req RequestSpec, result responseResult) jsonResponse {
 	resp := result.resp
 	mediaType, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type"))
 	text := isTextualResponse(mediaType)
@@ -171,21 +177,25 @@ func (document *jsonDocument) add(req RequestSpec, result responseResult) {
 	if text {
 		entry.Body = string(result.body)
 	}
-	document.Responses = append(document.Responses, entry)
-	if len(document.Responses) > 1 {
-		if document.Summary == nil {
-			document.Summary = &jsonSummary{}
-			if document.Responses[0].StatusCode < http.StatusBadRequest {
-				document.Summary.Successful++
-			} else {
-				document.Summary.Failed++
-			}
-		}
-		if resp.StatusCode < http.StatusBadRequest {
-			document.Summary.Successful++
-		} else {
-			document.Summary.Failed++
-		}
+	return entry
+}
+
+func (document *jsonDocument) updateSummary(statusCode int) {
+	if len(document.Responses) <= 1 {
+		return
+	}
+	if document.Summary == nil {
+		document.Summary = &jsonSummary{}
+		document.recordStatus(document.Responses[0].StatusCode)
+	}
+	document.recordStatus(statusCode)
+}
+
+func (document *jsonDocument) recordStatus(statusCode int) {
+	if statusCode < http.StatusBadRequest {
+		document.Summary.Successful++
+	} else {
+		document.Summary.Failed++
 	}
 }
 
@@ -216,33 +226,10 @@ func executeRequest(ctx context.Context, plan executionPlan) (responseResult, er
 	logger.Infof("executing request %q", safeRequestLabel(resolved.Name, resolved.URL))
 	logger.Debugf("resolved request method=%s url=%s http_version=%s", resolved.Method, safeURL(resolved.URL), resolved.HTTPVersion)
 
-	bodyBytes, err := buildBody(resolved)
+	request, err := prepareHTTPRequest(ctx, resolved, logger)
 	if err != nil {
 		return responseResult{outputFile: resolved.OutputFile}, err
 	}
-	if len(bodyBytes) > 0 {
-		logger.Debugf("prepared request body bytes=%d", len(bodyBytes))
-	}
-
-	request, err := http.NewRequestWithContext(ctx, resolved.Method, resolved.URL, bytes.NewReader(bodyBytes))
-	if err != nil {
-		return responseResult{outputFile: resolved.OutputFile}, sanitizeError(err, resolved.URL)
-	}
-	request.GetBody = func() (io.ReadCloser, error) {
-		return io.NopCloser(bytes.NewReader(bodyBytes)), nil
-	}
-	for key, values := range resolved.Headers {
-		if strings.EqualFold(key, "Host") {
-			if len(values) > 0 {
-				request.Host = values[len(values)-1]
-			}
-			continue
-		}
-		for _, value := range values {
-			request.Header.Add(key, value)
-		}
-	}
-	request = withTrace(request, logger)
 
 	transport, closer, err := buildTransport(resolved)
 	if err != nil {
@@ -256,37 +243,9 @@ func executeRequest(ctx context.Context, plan executionPlan) (responseResult, er
 	}
 
 	var roundTripper http.RoundTripper = loggingRoundTripper{base: transport, logger: logger}
-	switch strings.ToLower(resolved.Auth.Scheme) {
-	case "basic":
-		logger.Debugf("configuring basic authentication")
-		request.SetBasicAuth(resolved.Auth.Username, resolved.Auth.Password)
-	case "bearer":
-		logger.Debugf("configuring bearer authentication")
-		request.Header.Set("Authorization", "Bearer "+resolved.Auth.Token)
-	case "digest":
-		logger.Debugf("configuring digest authentication handshake")
-		roundTripper = &digest.Transport{
-			Username:  resolved.Auth.Username,
-			Password:  resolved.Auth.Password,
-			Transport: roundTripper,
-			Jar:       runtime.CookieJar,
-		}
-	case "ntlm":
-		logger.Debugf("configuring NTLM authentication handshake")
-		request.SetBasicAuth(resolved.Auth.Username, resolved.Auth.Password)
-		roundTripper = ntlmssp.Negotiator{RoundTripper: roundTripper}
-	case "azuread":
-		logger.Debugf("requesting Azure AD access token")
-		token, err := getAzureToken(ctx, resolved)
-		if err != nil {
-			return responseResult{outputFile: resolved.OutputFile}, err
-		}
-		request.Header.Set("Authorization", "Bearer "+token)
-	case "":
-	case "mtls":
-		logger.Debugf("using mTLS client certificate authentication")
-	default:
-		return responseResult{outputFile: resolved.OutputFile}, fmt.Errorf("unsupported auth scheme %q", resolved.Auth.Scheme)
+	roundTripper, err = applyAuthScheme(ctx, resolved, runtime, request, roundTripper)
+	if err != nil {
+		return responseResult{outputFile: resolved.OutputFile}, err
 	}
 
 	client := &http.Client{
@@ -317,6 +276,79 @@ func executeRequest(ctx context.Context, plan executionPlan) (responseResult, er
 	}
 	defer resp.Body.Close()
 
+	return readResponseBody(resp, resolved, runtime, started)
+}
+
+func prepareHTTPRequest(ctx context.Context, resolved resolvedRequest, logger *Logger) (*http.Request, error) {
+	bodyBytes, err := buildBody(resolved)
+	if err != nil {
+		return nil, err
+	}
+	if len(bodyBytes) > 0 {
+		logger.Debugf("prepared request body bytes=%d", len(bodyBytes))
+	}
+
+	request, err := http.NewRequestWithContext(ctx, resolved.Method, resolved.URL, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, sanitizeError(err, resolved.URL)
+	}
+	request.GetBody = func() (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(bodyBytes)), nil
+	}
+	for key, values := range resolved.Headers {
+		if strings.EqualFold(key, "Host") {
+			if len(values) > 0 {
+				request.Host = values[len(values)-1]
+			}
+			continue
+		}
+		for _, value := range values {
+			request.Header.Add(key, value)
+		}
+	}
+	return withTrace(request, logger), nil
+}
+
+func applyAuthScheme(ctx context.Context, resolved resolvedRequest, runtime RuntimeConfig, request *http.Request, transport http.RoundTripper) (http.RoundTripper, error) {
+	logger := runtime.Logger
+	roundTripper := transport
+	switch strings.ToLower(resolved.Auth.Scheme) {
+	case "basic":
+		logger.Debugf("configuring basic authentication")
+		request.SetBasicAuth(resolved.Auth.Username, resolved.Auth.Password)
+	case "bearer":
+		logger.Debugf("configuring bearer authentication")
+		request.Header.Set("Authorization", "Bearer "+resolved.Auth.Token)
+	case "digest":
+		logger.Debugf("configuring digest authentication handshake")
+		roundTripper = &digest.Transport{
+			Username:  resolved.Auth.Username,
+			Password:  resolved.Auth.Password,
+			Transport: roundTripper,
+			Jar:       runtime.CookieJar,
+		}
+	case "ntlm":
+		logger.Debugf("configuring NTLM authentication handshake")
+		request.SetBasicAuth(resolved.Auth.Username, resolved.Auth.Password)
+		roundTripper = ntlmssp.Negotiator{RoundTripper: roundTripper}
+	case "azuread":
+		logger.Debugf("requesting Azure AD access token")
+		token, err := getAzureToken(ctx, resolved)
+		if err != nil {
+			return nil, err
+		}
+		request.Header.Set("Authorization", "Bearer "+token)
+	case "":
+	case "mtls":
+		logger.Debugf("using mTLS client certificate authentication")
+	default:
+		return nil, fmt.Errorf("unsupported auth scheme %q", resolved.Auth.Scheme)
+	}
+	return roundTripper, nil
+}
+
+func readResponseBody(resp *http.Response, resolved resolvedRequest, runtime RuntimeConfig, started time.Time) (responseResult, error) {
+	logger := runtime.Logger
 	if resolved.OutputFile != "" {
 		outputFiles := runtime.outputFiles
 		if outputFiles == nil {
@@ -348,12 +380,17 @@ func readCappedBody(reader io.Reader, limit int) ([]byte, int, bool, error) {
 	if err != nil {
 		return nil, len(body), false, err
 	}
-	remaining, err := io.Copy(io.Discard, reader)
+	remaining, err := drainReader(reader)
 	if err != nil {
 		return nil, len(body) + int(remaining), false, err
 	}
 	totalBytes := len(body) + int(remaining)
 	return body, totalBytes, remaining > 0, nil
+}
+
+// drainReader discards and counts remaining bytes from reader.
+func drainReader(reader io.Reader) (int64, error) {
+	return io.Copy(io.Discard, reader)
 }
 
 // newCookieJar creates the shared cookie jar used across a CLI run. Cookies
@@ -373,15 +410,20 @@ func newOutputFileState() *outputFileState {
 	return &outputFileState{initialized: make(map[string]struct{})}
 }
 
-func (s *outputFileState) write(path string, body []byte) error {
+func (s *outputFileState) openFile(path string) (*os.File, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
+		return nil, err
 	}
 	flags := os.O_CREATE | os.O_WRONLY | os.O_TRUNC
 	if _, ok := s.initialized[path]; ok {
 		flags = os.O_CREATE | os.O_WRONLY | os.O_APPEND
 	}
 	file, err := os.OpenFile(path, flags, 0o644)
+	return file, err
+}
+
+func (s *outputFileState) write(path string, body []byte) error {
+	file, err := s.openFile(path)
 	if err != nil {
 		return err
 	}
@@ -399,14 +441,7 @@ func (s *outputFileState) write(path string, body []byte) error {
 const maxResponsePreviewSize = 1 << 20
 
 func (s *outputFileState) writeFromReader(path string, reader io.Reader) ([]byte, int, bool, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return nil, 0, false, err
-	}
-	flags := os.O_CREATE | os.O_WRONLY | os.O_TRUNC
-	if _, ok := s.initialized[path]; ok {
-		flags = os.O_CREATE | os.O_WRONLY | os.O_APPEND
-	}
-	file, err := os.OpenFile(path, flags, 0o644)
+	file, err := s.openFile(path)
 	if err != nil {
 		return nil, 0, false, err
 	}
@@ -430,13 +465,14 @@ type previewWriter struct {
 
 func (w *previewWriter) Write(p []byte) (int, error) {
 	written := len(p)
-	if w.buffer.Len() < w.limit {
-		remaining := w.limit - w.buffer.Len()
-		if len(p) > remaining {
-			p = p[:remaining]
-		}
-		_, _ = w.buffer.Write(p)
+	remaining := w.limit - w.buffer.Len()
+	if remaining <= 0 {
+		return written, nil
 	}
+	if len(p) > remaining {
+		p = p[:remaining]
+	}
+	_, _ = w.buffer.Write(p)
 	return written, nil
 }
 
@@ -497,89 +533,21 @@ func resolveRequest(spec RequestSpec, runtime RuntimeConfig, vars resolver) (res
 	if resolved.SelfSignedCertFile, err = chooseResolvedPath(runtime.RootDir, runtime.SelfSignedCertFile, spec.SelfSignedCertFile, runtime.Config.SelfSignedCertFile, vars); err != nil {
 		return resolved, err
 	}
-	if resolved.Auth.CACertFile != "" {
-		authCACert, err := resolveString(resolved.Auth.CACertFile, vars)
-		if err != nil {
-			return resolved, err
-		}
-		resolved.Auth.CACertFile = resolvePath(runtime.RootDir, authCACert)
+	if resolved.Auth.CACertFile, err = resolvePathField(resolved.Auth.CACertFile, runtime.RootDir, vars); err != nil {
+		return resolved, err
 	}
 	// An explicit request-level `# @ca-cert` directive always wins; otherwise
 	// an auth-level CA overrides the global config default.
 	if resolved.CACertFile, err = chooseResolvedPath(runtime.RootDir, spec.CACertFile, resolved.Auth.CACertFile, runtime.Config.CACertFile, vars); err != nil {
 		return resolved, err
 	}
-	resolved.Insecure = runtime.Config.Insecure || runtime.Insecure
-	if spec.InsecureSet {
-		resolved.Insecure = spec.Insecure
-	} else if spec.Insecure {
-		resolved.Insecure = true
-	}
-	resolved.Headers = http.Header{}
-	for key, values := range spec.Headers {
-		for _, value := range values {
-			resolvedValue, err := resolveString(value, vars)
-			if err != nil {
-				return resolved, err
-			}
-			resolved.Headers.Add(key, resolvedValue)
-		}
+	resolved.Insecure = resolveInsecure(spec, runtime)
+	if resolved.Headers, err = resolveHeaders(spec.Headers, vars); err != nil {
+		return resolved, err
 	}
 
-	if resolved.Auth.Username, err = resolveString(resolved.Auth.Username, vars); err != nil {
+	if resolved.Auth, err = resolveAuth(resolved.Auth, resolved.CertFile, resolved.KeyFile, runtime.RootDir, vars); err != nil {
 		return resolved, err
-	}
-	if resolved.Auth.Password, err = resolveString(resolved.Auth.Password, vars); err != nil {
-		return resolved, err
-	}
-	if resolved.Auth.Token, err = resolveString(resolved.Auth.Token, vars); err != nil {
-		return resolved, err
-	}
-	if resolved.Auth.Scope, err = resolveString(resolved.Auth.Scope, vars); err != nil {
-		return resolved, err
-	}
-	if resolved.Auth.Resource, err = resolveString(resolved.Auth.Resource, vars); err != nil {
-		return resolved, err
-	}
-	if resolved.Auth.TenantID, err = resolveString(resolved.Auth.TenantID, vars); err != nil {
-		return resolved, err
-	}
-	if resolved.Auth.ClientID, err = resolveString(resolved.Auth.ClientID, vars); err != nil {
-		return resolved, err
-	}
-	if resolved.Auth.ClientSecret, err = resolveString(resolved.Auth.ClientSecret, vars); err != nil {
-		return resolved, err
-	}
-	if resolved.Auth.TokenURL, err = resolveString(resolved.Auth.TokenURL, vars); err != nil {
-		return resolved, err
-	}
-	if resolved.Auth.CertFile != "" {
-		if resolved.Auth.CertFile, err = resolveString(resolved.Auth.CertFile, vars); err != nil {
-			return resolved, err
-		}
-		resolved.Auth.CertFile = resolvePath(runtime.RootDir, resolved.Auth.CertFile)
-	}
-	if resolved.Auth.KeyFile != "" {
-		if resolved.Auth.KeyFile, err = resolveString(resolved.Auth.KeyFile, vars); err != nil {
-			return resolved, err
-		}
-		resolved.Auth.KeyFile = resolvePath(runtime.RootDir, resolved.Auth.KeyFile)
-	}
-	if resolved.Auth.CertFile == "" {
-		resolved.Auth.CertFile = resolved.CertFile
-	}
-	if resolved.Auth.KeyFile == "" {
-		resolved.Auth.KeyFile = resolved.KeyFile
-	}
-	if strings.EqualFold(resolved.Auth.Scheme, "mtls") {
-		switch {
-		case resolved.Auth.CertFile == "":
-			return resolved, errors.New("mtls authentication requires a certificate file")
-		case isPKCS12Path(resolved.Auth.CertFile) && resolved.Auth.Password == "":
-			return resolved, errors.New("mtls authentication with a PKCS#12 certificate requires a password")
-		case !isPKCS12Path(resolved.Auth.CertFile) && resolved.Auth.KeyFile == "":
-			return resolved, errors.New("mtls authentication with a PEM certificate requires a key file")
-		}
 	}
 
 	if resolved.HTTPVersion == "" {
@@ -593,6 +561,104 @@ func resolveRequest(spec RequestSpec, runtime RuntimeConfig, vars resolver) (res
 	}
 
 	return resolved, nil
+}
+
+func resolveInsecure(spec RequestSpec, runtime RuntimeConfig) bool {
+	insecure := runtime.Config.Insecure || runtime.Insecure
+	if spec.InsecureSet {
+		return spec.Insecure
+	}
+	if spec.Insecure {
+		return true
+	}
+	return insecure
+}
+
+func resolveHeaders(specHeaders http.Header, vars resolver) (http.Header, error) {
+	headers := http.Header{}
+	for key, values := range specHeaders {
+		for _, value := range values {
+			resolvedValue, err := resolveString(value, vars)
+			if err != nil {
+				return nil, err
+			}
+			headers.Add(key, resolvedValue)
+		}
+	}
+	return headers, nil
+}
+
+func resolveAuth(auth AuthConfig, defaultCertFile, defaultKeyFile, rootDir string, vars resolver) (AuthConfig, error) {
+	var err error
+	if auth.Username, err = resolveString(auth.Username, vars); err != nil {
+		return auth, err
+	}
+	if auth.Password, err = resolveString(auth.Password, vars); err != nil {
+		return auth, err
+	}
+	if auth.Token, err = resolveString(auth.Token, vars); err != nil {
+		return auth, err
+	}
+	if auth.Scope, err = resolveString(auth.Scope, vars); err != nil {
+		return auth, err
+	}
+	if auth.Resource, err = resolveString(auth.Resource, vars); err != nil {
+		return auth, err
+	}
+	if auth.TenantID, err = resolveString(auth.TenantID, vars); err != nil {
+		return auth, err
+	}
+	if auth.ClientID, err = resolveString(auth.ClientID, vars); err != nil {
+		return auth, err
+	}
+	if auth.ClientSecret, err = resolveString(auth.ClientSecret, vars); err != nil {
+		return auth, err
+	}
+	if auth.TokenURL, err = resolveString(auth.TokenURL, vars); err != nil {
+		return auth, err
+	}
+	if auth.CertFile, err = resolvePathField(auth.CertFile, rootDir, vars); err != nil {
+		return auth, err
+	}
+	if auth.KeyFile, err = resolvePathField(auth.KeyFile, rootDir, vars); err != nil {
+		return auth, err
+	}
+	if auth.CertFile == "" {
+		auth.CertFile = defaultCertFile
+	}
+	if auth.KeyFile == "" {
+		auth.KeyFile = defaultKeyFile
+	}
+	if err := validateMTLSAuth(auth); err != nil {
+		return auth, err
+	}
+	return auth, nil
+}
+
+func resolvePathField(value, rootDir string, vars resolver) (string, error) {
+	if value == "" {
+		return "", nil
+	}
+	resolved, err := resolveString(value, vars)
+	if err != nil {
+		return "", err
+	}
+	return resolvePath(rootDir, resolved), nil
+}
+
+func validateMTLSAuth(auth AuthConfig) error {
+	if !strings.EqualFold(auth.Scheme, "mtls") {
+		return nil
+	}
+	switch {
+	case auth.CertFile == "":
+		return errors.New("mtls authentication requires a certificate file")
+	case isPKCS12Path(auth.CertFile) && auth.Password == "":
+		return errors.New("mtls authentication with a PKCS#12 certificate requires a password")
+	case !isPKCS12Path(auth.CertFile) && auth.KeyFile == "":
+		return errors.New("mtls authentication with a PEM certificate requires a key file")
+	}
+	return nil
 }
 
 func chooseResolvedValue(values ...any) (string, error) {
@@ -661,46 +727,30 @@ func overlayAuth(base, override AuthConfig) AuthConfig {
 	if override.Scheme != "" && base.Scheme != "" && !strings.EqualFold(override.Scheme, base.Scheme) {
 		base = AuthConfig{}
 	}
-	if override.Scheme != "" {
-		base.Scheme = override.Scheme
-	}
-	if override.Username != "" {
-		base.Username = override.Username
-	}
-	if override.Password != "" {
-		base.Password = override.Password
-	}
-	if override.Token != "" {
-		base.Token = override.Token
-	}
-	if override.CertFile != "" {
-		base.CertFile = override.CertFile
-	}
-	if override.KeyFile != "" {
-		base.KeyFile = override.KeyFile
-	}
-	if override.CACertFile != "" {
-		base.CACertFile = override.CACertFile
-	}
-	if override.TenantID != "" {
-		base.TenantID = override.TenantID
-	}
-	if override.ClientID != "" {
-		base.ClientID = override.ClientID
-	}
-	if override.ClientSecret != "" {
-		base.ClientSecret = override.ClientSecret
-	}
-	if override.Scope != "" {
-		base.Scope = override.Scope
-	}
-	if override.Resource != "" {
-		base.Resource = override.Resource
-	}
-	if override.TokenURL != "" {
-		base.TokenURL = override.TokenURL
-	}
+	overlayFields(&base, &override)
 	return base
+}
+
+func overlayFields(base, override *AuthConfig) {
+	overrideField(&base.Scheme, override.Scheme)
+	overrideField(&base.Username, override.Username)
+	overrideField(&base.Password, override.Password)
+	overrideField(&base.Token, override.Token)
+	overrideField(&base.CertFile, override.CertFile)
+	overrideField(&base.KeyFile, override.KeyFile)
+	overrideField(&base.CACertFile, override.CACertFile)
+	overrideField(&base.TenantID, override.TenantID)
+	overrideField(&base.ClientID, override.ClientID)
+	overrideField(&base.ClientSecret, override.ClientSecret)
+	overrideField(&base.Scope, override.Scope)
+	overrideField(&base.Resource, override.Resource)
+	overrideField(&base.TokenURL, override.TokenURL)
+}
+
+func overrideField(dst *string, src string) {
+	if src != "" {
+		*dst = src
+	}
 }
 
 func isEmptyAuth(auth AuthConfig) bool {

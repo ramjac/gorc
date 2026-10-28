@@ -337,17 +337,16 @@ func selectRequests(requests []RequestSpec, options RunOptions) ([]RequestSpec, 
 		}
 	}
 	if len(options.Names) > 0 {
+		requestsByName := make(map[string][]RequestSpec, len(requests))
+		for _, request := range requests {
+			requestsByName[request.Name] = append(requestsByName[request.Name], request)
+		}
 		for _, name := range options.Names {
-			found := false
-			for _, request := range requests {
-				if request.Name == name {
-					selected = append(selected, request)
-					found = true
-				}
-			}
-			if !found {
+			matched, ok := requestsByName[name]
+			if !ok {
 				return nil, fmt.Errorf("request named %q not found", name)
 			}
+			selected = append(selected, matched...)
 		}
 	}
 	if len(selected) > 0 {
