@@ -294,6 +294,70 @@ func TestMergeAuthNoneDisablesInheritedScheme(t *testing.T) {
 	}
 }
 
+func TestOverlayAuthAllFields(t *testing.T) {
+	t.Parallel()
+
+	base := AuthConfig{
+		Scheme:       "azuread",
+		Username:     "u1",
+		Password:     "p1",
+		Token:        "t1",
+		CertFile:     "cert1",
+		KeyFile:      "key1",
+		CACertFile:   "ca1",
+		TenantID:     "tenant1",
+		ClientID:     "client1",
+		ClientSecret: "secret1",
+		Scope:        "scope1",
+		Resource:     "res1",
+		TokenURL:     "url1",
+	}
+
+	override := AuthConfig{
+		Scheme:       "azuread",
+		Username:     "u2",
+		Password:     "p2",
+		Token:        "t2",
+		CertFile:     "cert2",
+		KeyFile:      "key2",
+		CACertFile:   "ca2",
+		TenantID:     "tenant2",
+		ClientID:     "client2",
+		ClientSecret: "secret2",
+		Scope:        "scope2",
+		Resource:     "res2",
+		TokenURL:     "url2",
+	}
+
+	got := overlayAuth(base, override)
+	if got != override {
+		t.Fatalf("expected all fields to be overridden, got %#v, want %#v", got, override)
+	}
+
+	// Partial override
+	partialOverride := AuthConfig{
+		Username: "u3",
+	}
+	gotPartial := overlayAuth(base, partialOverride)
+	if gotPartial.Username != "u3" || gotPartial.Password != "p1" || gotPartial.Scheme != "azuread" {
+		t.Fatalf("expected partial override to update only non-empty fields, got %#v", gotPartial)
+	}
+}
+
+func TestMergeAuthSchemeMismatchResetsBase(t *testing.T) {
+	t.Parallel()
+
+	merged := mergeAuth(
+		AuthConfig{Scheme: "basic", Username: "u1", Password: "p1"},
+		AuthConfig{},
+		AuthConfig{Scheme: "bearer", Token: "tok1"},
+	)
+	expected := AuthConfig{Scheme: "bearer", Token: "tok1"}
+	if merged != expected {
+		t.Fatalf("expected scheme mismatch to reset base auth, got %#v, want %#v", merged, expected)
+	}
+}
+
 func TestNewCookieJarRejectsPublicSuffixCookies(t *testing.T) {
 	t.Parallel()
 
@@ -538,6 +602,63 @@ func TestResolveRequestRejectsMTLSWithoutEffectiveCertificatePair(t *testing.T) 
 			}
 		})
 	}
+}
+
+func TestReadCappedBody(t *testing.T) {
+	t.Parallel()
+
+	t.Run("under limit", func(t *testing.T) {
+		t.Parallel()
+		input := "hello world"
+		body, totalBytes, truncated, err := readCappedBody(strings.NewReader(input), 20)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(body) != input {
+			t.Fatalf("expected %q, got %q", input, string(body))
+		}
+		if totalBytes != len(input) {
+			t.Fatalf("expected totalBytes %d, got %d", len(input), totalBytes)
+		}
+		if truncated {
+			t.Fatal("expected truncated to be false")
+		}
+	})
+
+	t.Run("over limit", func(t *testing.T) {
+		t.Parallel()
+		input := "hello world!"
+		body, totalBytes, truncated, err := readCappedBody(strings.NewReader(input), 5)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(body) != "hello" {
+			t.Fatalf("expected capped body 'hello', got %q", string(body))
+		}
+		if totalBytes != len(input) {
+			t.Fatalf("expected totalBytes %d, got %d", len(input), totalBytes)
+		}
+		if !truncated {
+			t.Fatal("expected truncated to be true")
+		}
+	})
+
+	t.Run("error reading body", func(t *testing.T) {
+		t.Parallel()
+		errReader := &errTestReader{err: errors.New("read error")}
+		_, _, _, err := readCappedBody(errReader, 10)
+		if err == nil || err.Error() != "read error" {
+			t.Fatalf("expected read error, got %v", err)
+		}
+	})
+}
+
+type errTestReader struct {
+	err error
+}
+
+func (r *errTestReader) Read(p []byte) (int, error) {
+	return 0, r.err
 }
 
 func TestResolveRequestAcceptsPasswordProtectedPKCS12Certificate(t *testing.T) {
