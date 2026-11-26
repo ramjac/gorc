@@ -172,7 +172,7 @@ The `mtls` authentication scheme accepts either a PEM certificate with a separat
 
 For `basic`, `digest`, and `ntlm`, include both credentials after the scheme, with the username first. Values can use variables, for example `# @auth basic {{user}} {{secret}}`.
 
-Use `# @auth none` on an individual request to disable an auth scheme configured at the CLI or config level, for example when a shared `.http` file mixes authenticated and public/unrelated endpoints.
+Use `# @auth none` on an individual request to disable an auth scheme configured in the config file, for example when a shared `.http` file mixes authenticated and public/unrelated endpoints.
 
 When a request has an active auth scheme, gorc does not automatically follow redirect responses (3xx); the redirect response is returned as-is instead. This prevents credentials (Basic/digest/NTLM headers, bearer tokens, or an mTLS client certificate) from being forwarded to whatever server a redirect points at. Unauthenticated requests continue to follow redirects normally.
 
@@ -261,7 +261,7 @@ Example:
 ## Notes
 
 - `trace` logging includes low-level request lifecycle events such as connection acquisition, DNS lookup, connect/TLS milestones, and first-response-byte timing hooks exposed by Go's HTTP client.
-- `debug` logging includes request selection, auth setup, transport choices, proxy usage, TLS material loading, and response-file writes.
+- `debug` logging includes auth setup, transport choices, proxy usage, TLS material loading, and response-file writes.
 - `info` logging includes request start and completion status lines.
 - `error` logging includes transport and request failures.
 - Response headings, status lines, headers, and log labels are colorized by default.
@@ -270,3 +270,12 @@ Example:
 - A configured or directed self-signed certificate is added to the client trust store without disabling all TLS verification.
 - HTTP/3 requires HTTPS and does not currently support proxies in this CLI.
 - Cookies are shared only within a single CLI run.
+
+## Future Work
+
+Features that are not yet implemented:
+
+- CLI-level auth (for example an `--auth` flag). Auth can currently be configured only in the config file or with a per-request `# @auth` directive; the merge plumbing already has a CLI tier (`RunOptions.SelectedAuth`, merged between config and request level), but no flag exposes it.
+- A `--timeout` flag. The request timeout can currently be set only via the config file (`timeout`), defaulting to `30s`.
+- Proxy support for HTTP/3. An explicit proxy on an HTTP/3 request is rejected.
+- `https://` (CONNECT-over-TLS) proxies for strict HTTP/2. Only plain `http://` proxies are supported for HTTP/2.
